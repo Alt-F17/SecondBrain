@@ -4,6 +4,7 @@
 # Dependencies
 node_modules/
 package-lock.json
+!frontend/package-lock.json
 
 # Memory storage
 memories.json
