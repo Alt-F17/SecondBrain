@@ -1,0 +1,482 @@
+{
+  "nodes": [
+    {
+      "id": "memory",
+      "label": "memory",
+      "collection": "second-brain",
+      "repo": null,
+      "hits": 14
+    },
+    {
+      "id": "second-brain.html",
+      "label": "second-brain.html",
+      "collection": "lifedb",
+      "repo": null,
+      "hits": 28
+    },
+    {
+      "id": "Alt-F17-FelixEgan-Webpage/public/productdesign.html",
+      "label": "productdesign.html",
+      "collection": "repos",
+      "repo": "Alt-F17-FelixEgan-Webpage",
+      "hits": 1
+    },
+    {
+      "id": "sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "label": "PDGE - SLIDES OCR.txt",
+      "collection": "repos",
+      "repo": "sf-study-tools",
+      "hits": 1
+    },
+    {
+      "id": "server.js",
+      "label": "server.js",
+      "collection": "lifedb",
+      "repo": null,
+      "hits": 8
+    },
+    {
+      "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
+      "label": "PlutoModelfile4.txt",
+      "collection": "repos",
+      "repo": "Pluto-Personal-Assistant",
+      "hits": 1
+    },
+    {
+      "id": "SecondBrain/QUICKSTART.md",
+      "label": "QUICKSTART.md",
+      "collection": "repos",
+      "repo": "SecondBrain",
+      "hits": 1
+    },
+    {
+      "id": "SecondBrain/AI_INTEGRATION_GUIDE.md",
+      "label": "AI_INTEGRATION_GUIDE.md",
+      "collection": "repos",
+      "repo": "SecondBrain",
+      "hits": 1
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "label": "bellevue_almshouse_dataset.csv",
+      "collection": "repos",
+      "repo": "SF2-Assignments-and-Submissions",
+      "hits": 3
+    },
+    {
+      "id": "SF3-Assignments-and-Submissions/Class 2/w2-1.html",
+      "label": "w2-1.html",
+      "collection": "repos",
+      "repo": "SF3-Assignments-and-Submissions",
+      "hits": 1
+    },
+    {
+      "id": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json",
+      "label": "io.json",
+      "collection": "repos",
+      "repo": "coding-cat-Felix-s-Problem",
+      "hits": 1
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "label": "BXE_W26_Revised_Final.pdf",
+      "collection": "lifedb",
+      "repo": null,
+      "hits": 6
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "label": "regression.ipynb",
+      "collection": "repos",
+      "repo": "SF2-Assignments-and-Submissions",
+      "hits": 1
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv",
+      "label": "Student_Grades.csv",
+      "collection": "repos",
+      "repo": "SF2-Assignments-and-Submissions",
+      "hits": 1
+    },
+    {
+      "id": "sf-study-tools/public/sf1/sf1-study-tools.html",
+      "label": "sf1-study-tools.html",
+      "collection": "repos",
+      "repo": "sf-study-tools",
+      "hits": 1
+    },
+    {
+      "id": "sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "label": "ConceptTests.tsx",
+      "collection": "repos",
+      "repo": "sf-study-tools",
+      "hits": 1
+    },
+    {
+      "id": "stignore.txt",
+      "label": "stignore.txt",
+      "collection": "lifedb",
+      "repo": null,
+      "hits": 1
+    },
+    {
+      "id": "line-alert-relay-network/postcss.config.js",
+      "label": "postcss.config.js",
+      "collection": "repos",
+      "repo": "line-alert-relay-network",
+      "hits": 1
+    }
+  ],
+  "edges": [
+    {
+      "id": "memory||second-brain.html",
+      "source": "memory",
+      "target": "second-brain.html",
+      "weight": 40,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "Alt-F17-FelixEgan-Webpage/public/productdesign.html||memory",
+      "source": "memory",
+      "target": "Alt-F17-FelixEgan-Webpage/public/productdesign.html",
+      "weight": 1,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "memory||sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "source": "memory",
+      "target": "sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "weight": 1,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "second-brain.html||second-brain.html",
+      "source": "second-brain.html",
+      "target": "second-brain.html",
+      "weight": 51,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "Alt-F17-FelixEgan-Webpage/public/productdesign.html||second-brain.html",
+      "source": "second-brain.html",
+      "target": "Alt-F17-FelixEgan-Webpage/public/productdesign.html",
+      "weight": 5,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "second-brain.html||sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "source": "second-brain.html",
+      "target": "sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "weight": 5,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "Alt-F17-FelixEgan-Webpage/public/productdesign.html||sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "source": "Alt-F17-FelixEgan-Webpage/public/productdesign.html",
+      "target": "sf-study-tools/src/data/sf3/PDGE - SLIDES OCR.txt",
+      "weight": 1,
+      "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
+    },
+    {
+      "id": "memory||server.js",
+      "source": "memory",
+      "target": "server.js",
+      "weight": 12,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt||memory",
+      "source": "memory",
+      "target": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
+      "weight": 1,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "SecondBrain/QUICKSTART.md||memory",
+      "source": "memory",
+      "target": "SecondBrain/QUICKSTART.md",
+      "weight": 1,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "server.js||server.js",
+      "source": "server.js",
+      "target": "server.js",
+      "weight": 8,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "second-brain.html||server.js",
+      "source": "server.js",
+      "target": "second-brain.html",
+      "weight": 8,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt||server.js",
+      "source": "server.js",
+      "target": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
+      "weight": 4,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "SecondBrain/QUICKSTART.md||server.js",
+      "source": "server.js",
+      "target": "SecondBrain/QUICKSTART.md",
+      "weight": 4,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt||second-brain.html",
+      "source": "second-brain.html",
+      "target": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
+      "weight": 1,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "SecondBrain/QUICKSTART.md||second-brain.html",
+      "source": "second-brain.html",
+      "target": "SecondBrain/QUICKSTART.md",
+      "weight": 1,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt||SecondBrain/QUICKSTART.md",
+      "source": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
+      "target": "SecondBrain/QUICKSTART.md",
+      "weight": 1,
+      "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
+    },
+    {
+      "id": "memory||memory",
+      "source": "memory",
+      "target": "memory",
+      "weight": 5,
+      "query": "Yeah sure, save that info"
+    },
+    {
+      "id": "SecondBrain/AI_INTEGRATION_GUIDE.md||memory",
+      "source": "memory",
+      "target": "SecondBrain/AI_INTEGRATION_GUIDE.md",
+      "weight": 2,
+      "query": "Yeah sure, save that info"
+    },
+    {
+      "id": "SecondBrain/AI_INTEGRATION_GUIDE.md||second-brain.html",
+      "source": "second-brain.html",
+      "target": "SecondBrain/AI_INTEGRATION_GUIDE.md",
+      "weight": 5,
+      "query": "Yeah sure, save that info"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv||memory",
+      "source": "memory",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "weight": 4,
+      "query": "claude, what's my dog's name?"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv||second-brain.html",
+      "source": "second-brain.html",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "weight": 15,
+      "query": "claude, what's my dog's name?"
+    },
+    {
+      "id": "SF3-Assignments-and-Submissions/Class 2/w2-1.html||memory",
+      "source": "memory",
+      "target": "SF3-Assignments-and-Submissions/Class 2/w2-1.html",
+      "weight": 1,
+      "query": "Haiku, how do I make my favorite tacos?"
+    },
+    {
+      "id": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json||memory",
+      "source": "memory",
+      "target": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json",
+      "weight": 1,
+      "query": "Haiku, how do I make my favorite tacos?"
+    },
+    {
+      "id": "SF3-Assignments-and-Submissions/Class 2/w2-1.html||second-brain.html",
+      "source": "second-brain.html",
+      "target": "SF3-Assignments-and-Submissions/Class 2/w2-1.html",
+      "weight": 5,
+      "query": "Haiku, how do I make my favorite tacos?"
+    },
+    {
+      "id": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json||second-brain.html",
+      "source": "second-brain.html",
+      "target": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json",
+      "weight": 5,
+      "query": "Haiku, how do I make my favorite tacos?"
+    },
+    {
+      "id": "SF3-Assignments-and-Submissions/Class 2/w2-1.html||coding-cat-Felix-s-Problem/string_2/modulo-3/io.json",
+      "source": "SF3-Assignments-and-Submissions/Class 2/w2-1.html",
+      "target": "coding-cat-Felix-s-Problem/string_2/modulo-3/io.json",
+      "weight": 1,
+      "query": "Haiku, how do I make my favorite tacos?"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv||SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "source": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/bellevue_almshouse_dataset.csv",
+      "weight": 1,
+      "query": "what's my gf's name?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||memory",
+      "source": "memory",
+      "target": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "weight": 12,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb||memory",
+      "source": "memory",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "weight": 2,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv||memory",
+      "source": "memory",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv",
+      "weight": 2,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "weight": 7,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "weight": 4,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv",
+      "weight": 4,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv||SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "source": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/regression.ipynb",
+      "target": "SF2-Assignments-and-Submissions/In Class Notes and Activities/pandas & data management/Student_Grades.csv",
+      "weight": 1,
+      "query": "when is my next exam?"
+    },
+    {
+      "id": "memory||sf-study-tools/public/sf1/sf1-study-tools.html",
+      "source": "memory",
+      "target": "sf-study-tools/public/sf1/sf1-study-tools.html",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "memory||sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "source": "memory",
+      "target": "sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||server.js",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "server.js",
+      "weight": 4,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||sf-study-tools/public/sf1/sf1-study-tools.html",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "sf-study-tools/public/sf1/sf1-study-tools.html",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf||sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "source": "Dawson/Course Outlines/BXE_W26_Revised_Final.pdf",
+      "target": "sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "server.js||sf-study-tools/public/sf1/sf1-study-tools.html",
+      "source": "server.js",
+      "target": "sf-study-tools/public/sf1/sf1-study-tools.html",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "server.js||sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "source": "server.js",
+      "target": "sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "weight": 2,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "sf-study-tools/public/sf1/sf1-study-tools.html||sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "source": "sf-study-tools/public/sf1/sf1-study-tools.html",
+      "target": "sf-study-tools/src/components/tools/ConceptTests.tsx",
+      "weight": 1,
+      "query": "What tests do I have in BXE?"
+    },
+    {
+      "id": "memory||stignore.txt",
+      "source": "memory",
+      "target": "stignore.txt",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "line-alert-relay-network/postcss.config.js||memory",
+      "source": "memory",
+      "target": "line-alert-relay-network/postcss.config.js",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "second-brain.html||stignore.txt",
+      "source": "second-brain.html",
+      "target": "stignore.txt",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "line-alert-relay-network/postcss.config.js||second-brain.html",
+      "source": "second-brain.html",
+      "target": "line-alert-relay-network/postcss.config.js",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "server.js||stignore.txt",
+      "source": "server.js",
+      "target": "stignore.txt",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "line-alert-relay-network/postcss.config.js||server.js",
+      "source": "server.js",
+      "target": "line-alert-relay-network/postcss.config.js",
+      "weight": 2,
+      "query": "remember that I use Tailscale for VPN"
+    },
+    {
+      "id": "line-alert-relay-network/postcss.config.js||stignore.txt",
+      "source": "stignore.txt",
+      "target": "line-alert-relay-network/postcss.config.js",
+      "weight": 1,
+      "query": "remember that I use Tailscale for VPN"
+    }
+  ]
+}

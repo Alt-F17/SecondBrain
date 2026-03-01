@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""
+LifeDB Ingestion Pipeline — Phase 3
+Watches ~/lifedb/, chunks files intelligently by type,
+embeds via OpenAI, upserts into ChromaDB 'lifedb' collection.
+Memory-conservative design for 4GB RAM machines.
+"""
+
+import os
+import sys
+import hashlib
+import json
+import time
+import logging
+from pathlib import Path
+from datetime import datetime
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger("lifedb")
+
+# ── Config ────────────────────────────────────────────────────────────────────
+WATCH_PATH    = Path.home() / "lifedb"
+CHROMA_HOST   = "localhost"
+CHROMA_PORT   = 8000
+COLLECTION    = "lifedb"
+EMBED_MODEL   = "text-embedding-3-small"
+CHUNK_CHARS   = 1800
+CHUNK_OVERLAP = 200
+BATCH_SIZE    = 10
+MAX_FILE_MB   = 10
+STATE_FILE    = Path.home() / "SecondBrain" / ".ingest_state.json"
+
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+# ── Supported file types ──────────────────────────────────────────────────────
+SUPPORTED = {
+    # ── Python ────────────────────────────────────────────────────────────────
+    ".py", ".pyw", ".pyi",
+
+    # ── JavaScript / TypeScript ───────────────────────────────────────────────
+    ".js", ".mjs", ".cjs",
+    ".jsx", ".tsx", ".ts",
+    ".vue", ".svelte", ".astro",
+    ".coffee",
+
+    # ── Systems languages ─────────────────────────────────────────────────────
+    ".c", ".h",
+    ".cpp", ".cc", ".cxx", ".hpp", ".hxx",
+    ".rs",
+    ".go",
+    ".zig",
+    ".v",
+    ".odin",
+
+    # ── JVM ───────────────────────────────────────────────────────────────────
+    ".java",
+    ".kt", ".kts",
+    ".scala", ".sc",
+    ".groovy", ".gradle",
+    ".clj", ".cljs", ".cljc",
+
+    # ── .NET ──────────────────────────────────────────────────────────────────
+    ".cs",
+    ".fs", ".fsi", ".fsx",
+    ".vb",
+
+    # ── Mobile ────────────────────────────────────────────────────────────────
+    ".swift",
+    ".dart",
+
+    # ── Scripting ─────────────────────────────────────────────────────────────
+    ".rb", ".rake", ".gemspec",
+    ".php", ".phtml",
+    ".pl", ".pm",
+    ".lua",
+    ".tcl",
+    ".awk",
+    ".sh", ".bash", ".zsh",
+    ".fish", ".ksh", ".dash",
+    ".bat", ".cmd",
+    ".ps1", ".psm1", ".psd1",
+    ".applescript", ".scpt",
+
+    # ── Functional ────────────────────────────────────────────────────────────
+    ".hs", ".lhs",
+    ".ex", ".exs",
+    ".erl", ".hrl",
+    ".ml", ".mli",
+    ".elm",
+    ".purs",
+    ".rkt",
+    ".lisp", ".el",
+    ".scm",
+
+    # ── Data science / academic ───────────────────────────────────────────────
+    ".r", ".rmd", ".qmd",
+    ".jl",
+    ".ipynb",
+    ".m",
+
+    # ── Web / markup ──────────────────────────────────────────────────────────
+    ".html", ".htm", ".xhtml",
+    ".css", ".scss", ".sass", ".less", ".styl",
+    ".xml", ".xsl", ".xslt",
+    ".svg",
+    ".webmanifest",
+
+    # ── Templates ─────────────────────────────────────────────────────────────
+    ".j2", ".jinja", ".jinja2",
+    ".erb",
+    ".mustache", ".hbs",
+    ".ejs",
+    ".pug", ".jade",
+    ".twig",
+    ".liquid",
+
+    # ── Database / query ──────────────────────────────────────────────────────
+    ".sql", ".psql", ".mysql",
+    ".graphql", ".gql",
+    ".sparql",
+    ".cypher",
+
+    # ── API / schema / serialization ──────────────────────────────────────────
+    ".proto",
+    ".thrift",
+    ".avro",
+    ".wsdl",
+    ".raml",
+    ".har",
+
+    # ── Config & data formats ─────────────────────────────────────────────────
+    ".json", ".jsonl", ".ndjson",
+    ".json5",
+    ".yaml", ".yml",
+    ".toml",
+    ".ini", ".cfg", ".conf",
+    ".properties",
+    ".env", ".env.example", ".env.local", ".env.production",
+    ".csv", ".tsv",
+    ".plist",
+    ".editorconfig",
+
+    # ── Infrastructure as code ────────────────────────────────────────────────
+    ".tf", ".tfvars",
+    ".hcl",
+    ".bicep",
+    ".pkl",
+    ".nix",
+    ".dhall",
+
+    # ── CI/CD & DevOps ────────────────────────────────────────────────────────
+    ".dockerfile",
+    ".containerfile",
+    ".vagrantfile",
+    ".jenkinsfile",
+
+    # ── Package managers / build ──────────────────────────────────────────────
+    ".gemspec",
+    ".podspec",
+    ".cabal",
+    ".opam",
+
+    # ── Documentation & writing ───────────────────────────────────────────────
+    ".md", ".mdx", ".markdown",
+    ".rst",
+    ".adoc", ".asciidoc",
+    ".tex", ".latex", ".bib",
+    ".org",
+    ".wiki",
+    ".txt", ".text",
+    ".log",
+    ".rtf",
+    ".man",
+
+    # ── Office / productivity ─────────────────────────────────────────────────
+    ".docx",
+    ".pptx",
+    ".xlsx", ".xls",
+    ".odt", ".ods", ".odp",
+    ".pdf",
+    ".epub",
+    ".pages",
+
+    # ── Notebooks ─────────────────────────────────────────────────────────────
+    ".dbc",
+
+    # ── Game dev ──────────────────────────────────────────────────────────────
+    ".gd",
+    ".hlsl", ".glsl", ".wgsl",
+    ".shader",
+
+    # ── Version control / project meta ────────────────────────────────────────
+    ".gitignore", ".gitattributes",
+    ".npmrc", ".yarnrc", ".nvmrc",
+    ".eslintrc", ".prettierrc",
+    ".stylelintrc", ".babelrc",
+    ".browserslistrc",
+
+    # ── Misc developer ────────────────────────────────────────────────────────
+    ".makefile",
+    ".cmake",
+    ".diff", ".patch",
+    ".reg",
+    ".cer", ".pem",
+}
+
+# ── Extensionless filenames ───────────────────────────────────────────────────
+SUPPORTED_FILENAMES = {
+    "Dockerfile", "Makefile", "Vagrantfile", "Jenkinsfile",
+    "Containerfile", "Procfile", "Caddyfile",
+    "README", "LICENSE", "CHANGELOG", "CONTRIBUTING", "AUTHORS",
+    "CODEOWNERS", ".env", ".gitignore", ".gitattributes",
+    "nginx.conf", "apache.conf", ".htaccess", "robots.txt",
+    "requirements.txt", "Pipfile", "Gemfile", "Podfile",
+    "package.json", "composer.json", "pom.xml", "build.gradle",
+    "CMakeLists.txt", "Cargo.toml", "go.mod", "go.sum",
+    "mix.exs", "rebar.config", "stack.yaml", "cabal.project",
+}
+
+# ── Skip directories ──────────────────────────────────────────────────────────
+SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", ".next", ".nuxt", "coverage", ".cache",
+    "vendor", "target", ".gradle", ".idea", ".vscode"
+}
+
+# ── Clients ───────────────────────────────────────────────────────────────────
+import chromadb
+from openai import OpenAI
+
+chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+collection = chroma_client.get_or_create_collection(
+    name=COLLECTION,
+    metadata={"hnsw:space": "ip"}
+)
+openai_client = OpenAI(api_key=OPENAI_KEY)
+
+# ── State management ──────────────────────────────────────────────────────────
+def load_state():
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def save_state(state):
+    STATE_FILE.write_text(json.dumps(state))
+
+def file_hash(path):
+    try:
+        return hashlib.md5(Path(path).read_bytes()).hexdigest()
+    except Exception:
+        return None
+
+# ── Text extraction ───────────────────────────────────────────────────────────
+def extract_text(path):
+    path = Path(path)
+    ext = path.suffix.lower()
+    try:
+        if ext == ".pdf":
+            import PyPDF2
+            with open(path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                pages = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text)
+            return "\n".join(pages)
+
+        elif ext == ".docx":
+            from docx import Document
+            doc = Document(path)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+        elif ext == ".pptx":
+            from pptx import Presentation
+            prs = Presentation(path)
+            slides = []
+            for i, slide in enumerate(prs.slides, 1):
+                texts = [shape.text for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+                if texts:
+                    slides.append(f"[Slide {i}]\n" + "\n".join(texts))
+            return "\n\n".join(slides)
+
+        elif ext in {".xlsx", ".xls"}:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            sheets = []
+            for sheet in wb.sheetnames:
+                ws = wb[sheet]
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        rows.append("\t".join(cells))
+                if rows:
+                    sheets.append(f"[Sheet: {sheet}]\n" + "\n".join(rows))
+            return "\n\n".join(sheets)
+
+        elif ext == ".ipynb":
+            # Extract code and markdown cells from Jupyter notebooks
+            nb = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+            cells = []
+            for cell in nb.get("cells", []):
+                source = "".join(cell.get("source", []))
+                if source.strip():
+                    cell_type = cell.get("cell_type", "")
+                    prefix = f"[{cell_type}]\n" if cell_type else ""
+                    cells.append(prefix + source)
+            return "\n\n".join(cells)
+
+        elif ext == ".epub":
+            # Extract as zip, read HTML content
+            import zipfile
+            texts = []
+            with zipfile.ZipFile(path, "r") as z:
+                for name in z.namelist():
+                    if name.endswith((".html", ".xhtml", ".htm")):
+                        raw = z.read(name).decode("utf-8", errors="ignore")
+                        # Strip HTML tags simply
+                        import re
+                        clean = re.sub(r'<[^>]+>', ' ', raw)
+                        clean = re.sub(r'\s+', ' ', clean).strip()
+                        if len(clean) > 50:
+                            texts.append(clean)
+            return "\n\n".join(texts)
+
+        else:
+            return path.read_text(encoding="utf-8", errors="ignore")
+
+    except Exception as e:
+        log.warning(f"Could not extract {path.name}: {e}")
+        return None
+
+# ── Chunking ──────────────────────────────────────────────────────────────────
+def chunk_text(text, path):
+    ext = Path(path).suffix.lower()
+    name = Path(path).name
+    chunks = []
+
+    if ext in {".md", ".markdown", ".mdx", ".rst", ".org", ".adoc", ".asciidoc"}:
+        import re
+        sections = re.split(r'\n(?=#{1,3} )', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".py", ".pyw", ".pyi"}:
+        import re
+        sections = re.split(r'\n(?=(?:def |class |async def |@))', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".js", ".mjs", ".cjs", ".jsx", ".tsx", ".ts", ".vue", ".svelte", ".astro"}:
+        import re
+        sections = re.split(r'\n(?=(?:function |class |const |export |async function |module\.))', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".rs"}:
+        import re
+        sections = re.split(r'\n(?=(?:fn |pub fn |impl |struct |enum |trait |pub struct |pub enum ))', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".go"}:
+        import re
+        sections = re.split(r'\n(?=(?:func |type |var |const ))', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".java", ".kt", ".kts", ".scala", ".sc", ".cs", ".fs", ".swift", ".dart"}:
+        import re
+        sections = re.split(r'\n(?=(?:public |private |protected |class |interface |fun |func |def ))', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".ipynb"}:
+        # Already pre-split by cell in extract_text — just size-split each cell
+        for section in text.split("\n\n"):
+            if section.strip():
+                chunks.extend(_split_by_size(section))
+
+    elif ext in {".pptx"}:
+        # Already split by slide in extract_text
+        for section in text.split("\n\n"):
+            if section.strip():
+                chunks.extend(_split_by_size(section))
+
+    elif ext in {".csv", ".tsv"}:
+        # Chunk by rows to keep context
+        lines = text.splitlines()
+        header = lines[0] if lines else ""
+        for i in range(1, len(lines), 50):
+            batch = lines[i:i+50]
+            if batch:
+                chunks.append(header + "\n" + "\n".join(batch))
+
+    else:
+        chunks = _split_by_size(text)
+
+    return [c.strip() for c in chunks if len(c.strip()) > 60]
+
+def _split_by_size(text):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + CHUNK_CHARS
+        chunk = text[start:end]
+        if end < len(text):
+            for sep in ['\n\n', '\n', '. ', ' ']:
+                idx = chunk.rfind(sep)
+                if idx > CHUNK_CHARS // 2:
+                    chunk = text[start:start + idx + len(sep)]
+                    end = start + idx + len(sep)
+                    break
+        if chunk.strip():
+            chunks.append(chunk)
+        start = end - CHUNK_OVERLAP
+    return chunks
+
+# ── Embedding ─────────────────────────────────────────────────────────────────
+def embed_batch(texts):
+    try:
+        response = openai_client.embeddings.create(
+            model=EMBED_MODEL,
+            input=texts
+        )
+        return [item.embedding for item in response.data]
+    except Exception as e:
+        log.error(f"Embedding failed: {e}")
+        return None
+
+# ── Core ingest ───────────────────────────────────────────────────────────────
+def ingest_file(path, state):
+    path = Path(path)
+
+    # ── Gate check — extension OR known filename ──────────────────────────────
+    ext = path.suffix.lower()
+    if ext not in SUPPORTED and path.name not in SUPPORTED_FILENAMES:
+        return
+
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    if path.stat().st_size > MAX_FILE_MB * 1024 * 1024:
+        log.info(f"Skipping (>{MAX_FILE_MB}MB): {path.name}")
+        return
+
+    # Skip hidden files (except .env and dotfiles in SUPPORTED_FILENAMES)
+    for part in path.parts:
+        if part.startswith('.') and part not in SUPPORTED_FILENAMES and ext not in SUPPORTED:
+            return
+
+    # Skip junk directories
+    for part in path.parts:
+        if part in SKIP_DIRS:
+            return
+
+    current_hash = file_hash(path)
+    if not current_hash:
+        return
+
+    state_key = str(path)
+    if state.get(state_key) == current_hash:
+        return  # unchanged
+
+    log.info(f"Indexing: {path.relative_to(WATCH_PATH)}")
+
+    text = extract_text(path)
+    if not text or len(text.strip()) < 60:
+        return
+
+    chunks = chunk_text(text, path)
+    if not chunks:
+        return
+
+    rel_path = str(path.relative_to(WATCH_PATH))
+    file_type = ext.lstrip(".") or "text"
+    modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+
+    # Delete old chunks for this file
+    try:
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
+    except Exception:
+        pass
+
+    # Embed and upsert in memory-conservative batches
+    total_indexed = 0
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch = chunks[i:i + BATCH_SIZE]
+        embeddings = embed_batch(batch)
+        if not embeddings:
+            continue
+
+        ids = [
+            hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
+            for j in range(len(batch))
+        ]
+
+        metadatas = [{
+            "source_path": rel_path,
+            "file_name": path.name,
+            "file_type": file_type,
+            "modified": modified,
+            "chunk_index": i + j,
+        } for j in range(len(batch))]
+
+        try:
+            collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=batch,
+                metadatas=metadatas
+            )
+            total_indexed += len(batch)
+        except Exception as e:
+            log.error(f"ChromaDB upsert failed: {e}")
+
+        time.sleep(0.1)
+
+    state[state_key] = current_hash
+    log.info(f"✅ {path.name} → {total_indexed} chunks indexed")
+
+def remove_file(path, state):
+    path = Path(path)
+    try:
+        rel_path = str(path.relative_to(WATCH_PATH))
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
+            log.info(f"🗑️  Removed: {rel_path}")
+    except Exception:
+        pass
+    state.pop(str(path), None)
+
+# ── Bulk scan ─────────────────────────────────────────────────────────────────
+def bulk_scan(state):
+    log.info(f"Scanning {WATCH_PATH}...")
+    all_files = list(WATCH_PATH.rglob("*"))
+
+    supported = []
+    for f in all_files:
+        if not f.is_file():
+            continue
+        # Skip junk dirs
+        if any(part in SKIP_DIRS for part in f.parts):
+            continue
+        ext = f.suffix.lower()
+        if ext in SUPPORTED or f.name in SUPPORTED_FILENAMES:
+            supported.append(f)
+
+    log.info(f"Found {len(supported)} supported files")
+
+    for i, path in enumerate(supported, 1):
+        log.info(f"[{i}/{len(supported)}]")
+        ingest_file(path, state)
+        if i % 20 == 0:
+            save_state(state)
+
+    save_state(state)
+    total = collection.count()
+    log.info(f"✅ Bulk scan complete — {total} total vectors in ChromaDB")
+
+# ── File watcher ──────────────────────────────────────────────────────────────
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+class IngestionHandler(FileSystemEventHandler):
+    def __init__(self, state):
+        self.state = state
+        self._debounce = {}
+
+    def _should_process(self, path):
+        now = time.time()
+        last = self._debounce.get(path, 0)
+        if now - last < 2.0:
+            return False
+        self._debounce[path] = now
+        return True
+
+    def on_modified(self, event):
+        if not event.is_directory and self._should_process(event.src_path):
+            ingest_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_created(self, event):
+        if not event.is_directory and self._should_process(event.src_path):
+            ingest_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            remove_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            remove_file(event.src_path, self.state)
+            if self._should_process(event.dest_path):
+                ingest_file(event.dest_path, self.state)
+            save_state(self.state)
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    log.info("🧠 LifeDB Ingestion Pipeline")
+    log.info(f"   Watch path : {WATCH_PATH}")
+    log.info(f"   ChromaDB   : {CHROMA_HOST}:{CHROMA_PORT}")
+    log.info(f"   Collection : {COLLECTION} (ip space)")
+    log.info(f"   Embed model: {EMBED_MODEL}")
+    log.info(f"   Extensions : {len(SUPPORTED)} supported")
+    log.info(f"   Filenames  : {len(SUPPORTED_FILENAMES)} supported")
+
+    if not OPENAI_KEY:
+        log.error("OPENAI_API_KEY not set — check your .env file")
+        sys.exit(1)
+
+    if not WATCH_PATH.exists():
+        log.error(f"Watch path does not exist: {WATCH_PATH}")
+        log.error("Is Syncthing running? (Phase 2)")
+        sys.exit(1)
+
+    state = load_state()
+    bulk_scan(state)
+
+    log.info("👀 Watching for real-time changes...")
+    handler = IngestionHandler(state)
+    observer = Observer()
+    observer.schedule(handler, str(WATCH_PATH), recursive=True)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        observer.stop()
+        observer.join()
+
+    log.info("👋 Ingestion pipeline stopped")
