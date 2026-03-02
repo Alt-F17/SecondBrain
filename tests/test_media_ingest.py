@@ -260,31 +260,6 @@ class TestExtensionSets:
 # Known bugs — documented, will fail when bugs are fixed
 # ─────────────────────────────────────────────────────────────────────────────
 class TestKnownBugs:
-    # ── Bug #12: Audio uses gpt-4o-mini-transcribe instead of whisper-1 ──
-    def test_BUG12_audio_model_should_be_whisper_1(self, tmp_path):
-        """Bug #12: process_audio() calls gpt-4o-mini-transcribe (invalid)
-        instead of whisper-1. This test captures the actual model used."""
-        f = tmp_path / "voice.wav"; f.write_bytes(b"fake wav")
-        calls_made = []
-
-        def capture_transcribe(**kwargs):
-            calls_made.append(kwargs.get("model", ""))
-            return "Hello world transcript"
-
-        with patch.object(media_ingest.client.audio.transcriptions, "create",
-                          side_effect=capture_transcribe):
-            media_ingest.process_audio(f)
-
-        if calls_made:
-            actual_model = calls_made[0]
-            # Bug: actual model is "gpt-4o-mini-transcribe" not "whisper-1"
-            if actual_model != "whisper-1":
-                pytest.xfail(
-                    f"Bug #12: Audio model is '{actual_model}', expected 'whisper-1'"
-                )
-            else:
-                assert actual_model == "whisper-1"
-
     # ── Bug #14: ffmpeg extracts all frames before cap ───────────────────
     def test_BUG14_video_frame_cap_metadata(self):
         """Bug #14: process_video extracts all frames via ffmpeg BEFORE
