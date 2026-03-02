@@ -414,6 +414,11 @@ def chunk_text(text, path):
     return [c.strip() for c in chunks if len(c.strip()) > 60]
 
 def _split_by_size(text):
+    # Bug #9 fix: guard against infinite loop when overlap is >= chunk size
+    if CHUNK_OVERLAP >= CHUNK_CHARS:
+        raise ValueError(
+            f"CHUNK_OVERLAP ({CHUNK_OVERLAP}) must be less than CHUNK_CHARS ({CHUNK_CHARS})"
+        )
     chunks = []
     start = 0
     while start < len(text):

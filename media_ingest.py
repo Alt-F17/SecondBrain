@@ -61,9 +61,12 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 def file_hash(path: Path) -> str:
+    # Bug #13 fix: hash the actual file content so restored/replaced files
+    # with the same mtime are correctly detected as changed
     h = hashlib.md5()
-    h.update(str(path).encode())
-    h.update(str(path.stat().st_mtime).encode())
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
     return h.hexdigest()
 
 # ── Thumbnail generation ──────────────────────────────────────────────────────

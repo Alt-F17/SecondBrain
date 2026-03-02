@@ -71,7 +71,7 @@ const loadLocalMemories = async () => {
 };
 
 const saveLocalMemories = async () => {
-    try { await fs.writeFile(STORAGE_FILE, JSON.stringify(localMemories, null, 2)); } catch {}
+    try { await fs.writeFile(STORAGE_FILE, JSON.stringify(localMemories, null, 2)); } catch (e) { console.error('Failed to save memories:', e.message); }
 };
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
@@ -231,7 +231,8 @@ app.get('/api/memories', async (req, res) => {
         const { limit = 100, offset = 0 } = req.query;
         const results = [...localMemories]
             .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-            .slice(Number(offset), Number(offset) + parseInt(limit));
+            .slice(Number(offset), Number(offset) + parseInt(limit))
+            .map(({ embedding, ...rest }) => rest); // Bug #5 fix: strip 1536-dim vectors from API response
         res.json({ total: localMemories.length, results });
     } catch (e) { res.status(500).json({ error: 'Failed to retrieve memories' }); }
 });
@@ -282,18 +283,24 @@ app.post('/api/import', async (req, res) => {
         const { memories } = req.body;
         if (!Array.isArray(memories)) return res.status(400).json({ error: 'Invalid format' });
         let chromaImported = 0;
+        // Bug #2 fix: build set of existing IDs to prevent duplicate entries in localMemories
+        const existingIds = new Set(localMemories.map(m => m.id));
         for (const m of memories) {
             if (!m.embedding) m.embedding = await generateEmbedding(m.content);
             if (chromaCollection && m.embedding) {
                 try {
-                    await chromaCollection.add({ ids: [m.id], embeddings: [m.embedding], metadatas: [{ type: m.type, content: m.content, tags: m.tags.join(','), timestamp: m.timestamp }], documents: [m.content] });
+                    // Bug #2 fix: use upsert so re-imports update rather than throw on duplicate Chroma IDs
+                    // Bug #3 fix: guard against undefined tags with (m.tags || [])
+                    await chromaCollection.upsert({ ids: [m.id], embeddings: [m.embedding], metadatas: [{ type: m.type, content: m.content, tags: (m.tags || []).join(','), timestamp: m.timestamp }], documents: [m.content] });
                     chromaImported++;
                 } catch {}
             }
         }
-        localMemories.push(...memories);
+        // Bug #2 fix: only push memories whose IDs don't already exist locally
+        const newMemories = memories.filter(m => !existingIds.has(m.id));
+        localMemories.push(...newMemories);
         await saveLocalMemories();
-        res.json({ success: true, imported: memories.length, chromaImported });
+        res.json({ success: true, imported: newMemories.length, chromaImported });
     } catch (e) { res.status(500).json({ error: 'Import failed' }); }
 });
 
@@ -354,7 +361,8 @@ ${contextBlock}`;
             }
         } else {
             // gpt-5 family uses max_completion_tokens; gpt-4 family uses max_tokens
-            const isGpt5 = model.startsWith('gpt-5');
+            // Bug #4 fix: use the authoritative GPT5_MODELS Set instead of startsWith
+            const isGpt5 = GPT5_MODELS.has(model);
             const streamParams = {
                 model,
                 stream: true,
@@ -373,7 +381,9 @@ ${contextBlock}`;
 
         // Extract and save SAVE_MEMORY command if present
         let savedMemory = null;
-        const memMatch = fullText.match(/\nSAVE_MEMORY:(\{[^\n]+\})/);
+        // Bug #1 fix: \n? makes the leading newline optional so SAVE_MEMORY at the very
+        // start of the response (no preceding newline) is still detected
+        const memMatch = fullText.match(/\n?SAVE_MEMORY:(\{[^\n]+\})/);
         if (memMatch) {
             try {
                 const memData = JSON.parse(memMatch[1]);
@@ -431,6 +441,10 @@ app.get('/api/graph', async (req, res) => {
 app.post('/api/graph/edge', async (req, res) => {
     try {
         const { sources, query } = req.body;
+        // Bug #6 fix: validate sources before iterating — null/undefined crashes with TypeError
+        if (!Array.isArray(sources)) {
+            return res.status(400).json({ error: 'sources must be a non-empty array' });
+        }
         let data = { nodes: [], edges: [] };
         try { data = JSON.parse(await fs.readFile(GRAPH_FILE, 'utf-8')); } catch {}
 
@@ -475,4 +489,6 @@ async function start() {
     });
 }
 
-start();
+if (require.main === module) { start(); }
+
+module.exports = { app, generateEmbedding, searchAllCollections, SCORE_THRESHOLD, CLAUDE_MODELS, OPENAI_MODELS, GPT5_MODELS };
