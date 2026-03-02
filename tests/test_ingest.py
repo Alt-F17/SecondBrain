@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ── Import the module under test ─────────────────────────────────────────────
-# conftest.py has already installed chromadb/openai/watchdog mock modules.
+# conftest.py has already installed weaviate/openai/watchdog mock modules.
 # We import ingest here; WATCH_PATH and STATE_FILE will be reconfigured per test.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import ingest
@@ -325,11 +325,11 @@ class TestIngestFile:
         f.write_text(("# Header\n" + "Content line. " * 50) * 3, encoding="utf-8")
         state = {}
         with patch("ingest.WATCH_PATH", watch), \
-             patch.object(ingest.collection, "get", return_value={"ids": []}), \
-             patch.object(ingest.collection, "add", return_value=None) as mock_add:
+             patch.object(ingest.collection.data, "delete_many", return_value=None), \
+             patch.object(ingest.collection.data, "insert_many", return_value=None) as mock_insert:
             ingest.ingest_file(f, state)
         assert str(f) in state
-        assert mock_add.called
+        assert mock_insert.called
 
     def test_deletes_old_chunks_before_reindexing(self, tmp_path):
         watch = self._make_watch(tmp_path)
@@ -337,9 +337,8 @@ class TestIngestFile:
         f.write_text("# Updated\n" + "New content. " * 60, encoding="utf-8")
         state = {str(f): "old_hash"}  # different hash → triggers reindex
         with patch("ingest.WATCH_PATH", watch), \
-             patch.object(ingest.collection, "get", return_value={"ids": ["old-chunk-id"]}), \
-             patch.object(ingest.collection, "delete", return_value=None) as mock_del, \
-             patch.object(ingest.collection, "add", return_value=None):
+             patch.object(ingest.collection.data, "delete_many", return_value=None) as mock_del, \
+             patch.object(ingest.collection.data, "insert_many", return_value=None):
             ingest.ingest_file(f, state)
         assert mock_del.called
 
@@ -373,19 +372,18 @@ class TestRemoveFile:
         f = watch / "gone.txt"
         state = {str(f): "somehash"}
         with patch("ingest.WATCH_PATH", watch), \
-             patch.object(ingest.collection, "get", return_value={"ids": []}):
+             patch.object(ingest.collection.data, "delete_many", return_value=None):
             ingest.remove_file(f, state)
         assert str(f) not in state
 
-    def test_calls_chroma_delete_for_existing_chunks(self, tmp_path):
+    def test_calls_weaviate_delete_many_for_existing_chunks(self, tmp_path):
         watch = tmp_path / "lifedb"; watch.mkdir(exist_ok=True)
         f = watch / "old.md"
         state = {str(f): "hash"}
         with patch("ingest.WATCH_PATH", watch), \
-             patch.object(ingest.collection, "get", return_value={"ids": ["chunk-1", "chunk-2"]}), \
-             patch.object(ingest.collection, "delete", return_value=None) as mock_del:
+             patch.object(ingest.collection.data, "delete_many", return_value=None) as mock_del:
             ingest.remove_file(f, state)
-        mock_del.assert_called_once_with(ids=["chunk-1", "chunk-2"])
+        mock_del.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -422,7 +420,7 @@ class TestEmbedBatch:
         # Mock must return N embeddings for N inputs
         def multi_embed(**kwargs):
             texts = kwargs.get("input", [])
-            return MagicMock(data=[MagicMock(embedding=[0.1] * 1536) for _ in texts])
+            return MagicMock(data=[MagicMock(embedding=[0.1] * 3072) for _ in texts])
 
         with patch.object(ingest.openai_client.embeddings, "create", side_effect=multi_embed):
             result = ingest.embed_batch(["hello", "world"])
@@ -434,7 +432,7 @@ class TestEmbedBatch:
             result = ingest.embed_batch(["text"])
         assert result is None
 
-    def test_embedding_length_is_1536(self):
+    def test_embedding_length_is_3072(self):
         result = ingest.embed_batch(["test"])
         assert result is not None
-        assert len(result[0]) == 1536
+        assert len(result[0]) == 3072

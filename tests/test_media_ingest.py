@@ -4,7 +4,7 @@ test_media_ingest.py — pytest tests for media_ingest.py
 Covers: state hashing, thumbnail creation, collection routing by extension,
         deduplication via state, and known bugs.
 
-conftest.py has already mocked chromadb, openai, PIL, dotenv, and watchdog.
+conftest.py has already mocked weaviate, openai, PIL, dotenv, and watchdog.
 """
 import sys
 import json
@@ -200,8 +200,9 @@ class TestEmbedAndStore:
         f = tmp_path / "pic.jpg"; f.write_bytes(b"data")
         result_data = {"type": "image", "description": "A cat", "thumb": None}
         with patch.object(media_ingest.client.embeddings, "create") as mock_embed, \
-             patch.object(media_ingest.col, "upsert", return_value=None):
-            mock_embed.return_value = MagicMock(data=[MagicMock(embedding=[0.1] * 1536)])
+             patch.object(media_ingest.col.data, "delete_by_id", return_value=None), \
+             patch.object(media_ingest.col.data, "insert", return_value=None):
+            mock_embed.return_value = MagicMock(data=[MagicMock(embedding=[0.1] * 3072)])
             media_ingest.embed_and_store(f, result_data)
         mock_embed.assert_called_once()
         call_kwargs = mock_embed.call_args[1] if mock_embed.call_args[1] else mock_embed.call_args[0][0]
@@ -210,15 +211,12 @@ class TestEmbedAndStore:
         f = tmp_path / "file.jpg"; f.write_bytes(b"jpeg")
         result_data = {"type": "image", "description": "a dog photo", "thumb": "/thumbs/abc.jpg"}
         with patch.object(media_ingest.client.embeddings, "create",
-                          return_value=MagicMock(data=[MagicMock(embedding=[0.0] * 1536)])), \
-             patch.object(media_ingest.col, "upsert") as mock_upsert:
+                          return_value=MagicMock(data=[MagicMock(embedding=[0.0] * 3072)])), \
+             patch.object(media_ingest.col.data, "delete_by_id", return_value=None), \
+             patch.object(media_ingest.col.data, "insert") as mock_insert:
             media_ingest.embed_and_store(f, result_data)
-        mock_upsert.assert_called_once()
-        kwargs = mock_upsert.call_args[1] if mock_upsert.call_args[1] else {}
-        args   = mock_upsert.call_args[0] if mock_upsert.call_args[0] else ()
-        # Either positional or keyword — check metadatas exists somewhere
-        upsert_call = mock_upsert.call_args
-        call_flat = str(upsert_call)
+        mock_insert.assert_called_once()
+        call_flat = str(mock_insert.call_args)
         assert "file_name" in call_flat
         assert "file_type" in call_flat
         assert "source_path" in call_flat

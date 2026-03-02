@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-LifeDB Repo Ingestion — Phase 4
-Indexes all cloned GitHub repos into Weaviate 'Repos' collection.
-Language-aware chunking, cosine distance, 4GB RAM conservative.
+LifeDB Ingestion Pipeline — Phase 3
+Watches ~/lifedb/, chunks files intelligently by type,
+embeds via OpenAI, upserts into ChromaDB 'lifedb' collection.
+Memory-conservative design for 4GB RAM machines.
 """
 
 import os
@@ -11,27 +12,31 @@ import hashlib
 import json
 import time
 import logging
-import subprocess
 from pathlib import Path
 from datetime import datetime
 
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-log = logging.getLogger("repo-ingest")
+log = logging.getLogger("lifedb")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-REPOS_PATH    = Path.home() / "repos"
-COLLECTION    = "Repos"
-EMBED_MODEL   = "text-embedding-3-large"
-CHUNK_CHARS   = 1800
-CHUNK_OVERLAP = 200
+WATCH_PATH    = Path.home() / "lifedb"
+CHROMA_HOST   = "localhost"
+CHROMA_PORT   = 8000
+COLLECTION    = "lifedb"
+EMBED_MODEL   = "text-embedding-3-small"
+# Smaller chunks produce more focused embeddings = better retrieval precision.
+# 1800-char chunks average over too many topics. 800 chars stays on one idea.
+# After changing this, re-ingest: stop the watcher, delete chroma lifedb collection, restart.
+CHUNK_CHARS   = 800
+CHUNK_OVERLAP = 80
 BATCH_SIZE    = 10
-MAX_FILE_MB   = 5
-STATE_FILE    = Path.home() / "SecondBrain" / ".repo_ingest_state.json"
-PULL_INTERVAL = 3600  # re-pull repos every hour
+MAX_FILE_MB   = 10
+STATE_FILE    = Path.home() / "SecondBrain" / ".ingest_state.json"
 
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -172,7 +177,20 @@ SUPPORTED = {
     ".wiki",
     ".txt", ".text",
     ".log",
+    ".rtf",
     ".man",
+
+    # ── Office / productivity ─────────────────────────────────────────────────
+    ".docx",
+    ".pptx",
+    ".xlsx", ".xls",
+    ".odt", ".ods", ".odp",
+    ".pdf",
+    ".epub",
+    ".pages",
+
+    # ── Notebooks ─────────────────────────────────────────────────────────────
+    ".dbc",
 
     # ── Game dev ──────────────────────────────────────────────────────────────
     ".gd",
@@ -211,20 +229,21 @@ SUPPORTED_FILENAMES = {
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
     "dist", "build", ".next", ".nuxt", "coverage", ".cache",
-    "vendor", "target", ".gradle", ".idea", ".vscode",
-    ".terraform", ".serverless", "tmp", "temp", "logs"
+    "vendor", "target", ".gradle", ".idea", ".vscode"
 }
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-import weaviate
-from weaviate.classes.query import Filter
+import chromadb
 from openai import OpenAI
 
-weaviate_client = weaviate.connect_to_local()
-collection = weaviate_client.collections.get(COLLECTION)
+chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+collection = chroma_client.get_or_create_collection(
+    name=COLLECTION,
+    metadata={"hnsw:space": "ip"}
+)
 openai_client = OpenAI(api_key=OPENAI_KEY)
 
-# ── State ─────────────────────────────────────────────────────────────────────
+# ── State management ──────────────────────────────────────────────────────────
 def load_state():
     if STATE_FILE.exists():
         try:
@@ -242,54 +261,54 @@ def file_hash(path):
     except Exception:
         return None
 
-# ── Git operations ────────────────────────────────────────────────────────────
-def get_repo_name(repo_path):
-    parts = repo_path.parts
-    repos_idx = next((i for i, p in enumerate(parts) if p == 'repos'), None)
-    if repos_idx and repos_idx + 2 < len(parts):
-        return f"{parts[repos_idx+1]}/{parts[repos_idx+2]}"
-    return repo_path.name
-
-def pull_repo(repo_path):
-    try:
-        result = subprocess.run(
-            ["git", "pull", "--ff-only"],
-            cwd=repo_path,
-            capture_output=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            output = result.stdout.decode().strip()
-            if output != "Already up to date.":
-                log.info(f"📥 Updated: {repo_path.name} — {output}")
-            return True
-    except subprocess.TimeoutExpired:
-        log.warning(f"⏱️  Pull timeout: {repo_path.name}")
-    except Exception as e:
-        log.warning(f"⚠️  Pull failed: {repo_path.name} — {e}")
-    return False
-
-def find_repos():
-    repos = []
-    for entry in REPOS_PATH.iterdir():
-        if not entry.is_dir() or entry.name.startswith('.'):
-            continue
-        if (entry / '.git').exists():
-            # Flat structure — repo directly in ~/repos/
-            repos.append(entry)
-        else:
-            # Namespaced — entry is an owner dir, look one level deeper
-            for repo_dir in entry.iterdir():
-                if repo_dir.is_dir() and (repo_dir / '.git').exists():
-                    repos.append(repo_dir)
-    return repos
-
-
 # ── Text extraction ───────────────────────────────────────────────────────────
 def extract_text(path):
+    path = Path(path)
     ext = path.suffix.lower()
     try:
-        if ext == ".ipynb":
+        if ext == ".pdf":
+            import PyPDF2
+            with open(path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                pages = []
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text)
+            return "\n".join(pages)
+
+        elif ext == ".docx":
+            from docx import Document
+            doc = Document(path)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+        elif ext == ".pptx":
+            from pptx import Presentation
+            prs = Presentation(path)
+            slides = []
+            for i, slide in enumerate(prs.slides, 1):
+                texts = [shape.text for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+                if texts:
+                    slides.append(f"[Slide {i}]\n" + "\n".join(texts))
+            return "\n\n".join(slides)
+
+        elif ext in {".xlsx", ".xls"}:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            sheets = []
+            for sheet in wb.sheetnames:
+                ws = wb[sheet]
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        rows.append("\t".join(cells))
+                if rows:
+                    sheets.append(f"[Sheet: {sheet}]\n" + "\n".join(rows))
+            return "\n\n".join(sheets)
+
+        elif ext == ".ipynb":
+            # Extract code and markdown cells from Jupyter notebooks
             nb = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
             cells = []
             for cell in nb.get("cells", []):
@@ -299,70 +318,110 @@ def extract_text(path):
                     prefix = f"[{cell_type}]\n" if cell_type else ""
                     cells.append(prefix + source)
             return "\n\n".join(cells)
+
+        elif ext == ".epub":
+            # Extract as zip, read HTML content
+            import zipfile
+            texts = []
+            with zipfile.ZipFile(path, "r") as z:
+                for name in z.namelist():
+                    if name.endswith((".html", ".xhtml", ".htm")):
+                        raw = z.read(name).decode("utf-8", errors="ignore")
+                        # Strip HTML tags simply
+                        import re
+                        clean = re.sub(r'<[^>]+>', ' ', raw)
+                        clean = re.sub(r'\s+', ' ', clean).strip()
+                        if len(clean) > 50:
+                            texts.append(clean)
+            return "\n\n".join(texts)
+
         else:
             return path.read_text(encoding="utf-8", errors="ignore")
+
     except Exception as e:
-        log.warning(f"Could not read {path.name}: {e}")
+        log.warning(f"Could not extract {path.name}: {e}")
         return None
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
-def chunk_code(text, path):
+def chunk_text(text, path):
     ext = Path(path).suffix.lower()
+    name = Path(path).name
     chunks = []
 
-    if ext in {".py", ".pyw", ".pyi"}:
+    if ext in {".md", ".markdown", ".mdx", ".rst", ".org", ".adoc", ".asciidoc"}:
+        import re
+        sections = re.split(r'\n(?=#{1,3} )', text)
+        for s in sections:
+            if s.strip():
+                chunks.extend(_split_by_size(s))
+
+    elif ext in {".py", ".pyw", ".pyi"}:
         import re
         sections = re.split(r'\n(?=(?:def |class |async def |@))', text)
         for s in sections:
             if s.strip():
-                chunks.extend(_split(s))
+                chunks.extend(_split_by_size(s))
 
     elif ext in {".js", ".mjs", ".cjs", ".jsx", ".tsx", ".ts", ".vue", ".svelte", ".astro"}:
         import re
         sections = re.split(r'\n(?=(?:function |class |const |export |async function |module\.))', text)
         for s in sections:
             if s.strip():
-                chunks.extend(_split(s))
+                chunks.extend(_split_by_size(s))
 
     elif ext in {".rs"}:
         import re
         sections = re.split(r'\n(?=(?:fn |pub fn |impl |struct |enum |trait |pub struct |pub enum ))', text)
         for s in sections:
             if s.strip():
-                chunks.extend(_split(s))
+                chunks.extend(_split_by_size(s))
 
     elif ext in {".go"}:
         import re
         sections = re.split(r'\n(?=(?:func |type |var |const ))', text)
         for s in sections:
             if s.strip():
-                chunks.extend(_split(s))
+                chunks.extend(_split_by_size(s))
 
     elif ext in {".java", ".kt", ".kts", ".scala", ".sc", ".cs", ".fs", ".swift", ".dart"}:
         import re
         sections = re.split(r'\n(?=(?:public |private |protected |class |interface |fun |func |def ))', text)
         for s in sections:
             if s.strip():
-                chunks.extend(_split(s))
+                chunks.extend(_split_by_size(s))
 
-    elif ext in {".md", ".mdx", ".markdown", ".rst", ".org", ".adoc", ".asciidoc"}:
-        import re
-        sections = re.split(r'\n(?=#{1,3} )', text)
-        for s in sections:
-            if s.strip():
-                chunks.extend(_split(s))
-
-    elif ext == ".ipynb":
+    elif ext in {".ipynb"}:
+        # Already pre-split by cell in extract_text — just size-split each cell
         for section in text.split("\n\n"):
             if section.strip():
-                chunks.extend(_split(section))
+                chunks.extend(_split_by_size(section))
+
+    elif ext in {".pptx"}:
+        # Already split by slide in extract_text
+        for section in text.split("\n\n"):
+            if section.strip():
+                chunks.extend(_split_by_size(section))
+
+    elif ext in {".csv", ".tsv"}:
+        # Chunk by rows to keep context
+        lines = text.splitlines()
+        header = lines[0] if lines else ""
+        for i in range(1, len(lines), 50):
+            batch = lines[i:i+50]
+            if batch:
+                chunks.append(header + "\n" + "\n".join(batch))
 
     else:
-        chunks = _split(text)
+        chunks = _split_by_size(text)
 
-    return [c.strip() for c in chunks if len(c.strip()) > 40]
+    return [c.strip() for c in chunks if len(c.strip()) > 60]
 
-def _split(text):
+def _split_by_size(text):
+    # Bug #9 fix: guard against infinite loop when overlap is >= chunk size
+    if CHUNK_OVERLAP >= CHUNK_CHARS:
+        raise ValueError(
+            f"CHUNK_OVERLAP ({CHUNK_OVERLAP}) must be less than CHUNK_CHARS ({CHUNK_CHARS})"
+        )
     chunks = []
     start = 0
     while start < len(text):
@@ -393,7 +452,7 @@ def embed_batch(texts):
         return None
 
 # ── Core ingest ───────────────────────────────────────────────────────────────
-def ingest_file(path, repo_name, state):
+def ingest_file(path, state):
     path = Path(path)
 
     # ── Gate check — extension OR known filename ──────────────────────────────
@@ -404,7 +463,18 @@ def ingest_file(path, repo_name, state):
     if not path.is_file() or path.stat().st_size == 0:
         return
     if path.stat().st_size > MAX_FILE_MB * 1024 * 1024:
+        log.info(f"Skipping (>{MAX_FILE_MB}MB): {path.name}")
         return
+
+    # Skip hidden files (except .env and dotfiles in SUPPORTED_FILENAMES)
+    for part in path.parts:
+        if part.startswith('.') and part not in SUPPORTED_FILENAMES and ext not in SUPPORTED:
+            return
+
+    # Skip junk directories
+    for part in path.parts:
+        if part in SKIP_DIRS:
+            return
 
     current_hash = file_hash(path)
     if not current_hash:
@@ -412,137 +482,179 @@ def ingest_file(path, repo_name, state):
 
     state_key = str(path)
     if state.get(state_key) == current_hash:
-        return
+        return  # unchanged
+
+    log.info(f"Indexing: {path.relative_to(WATCH_PATH)}")
 
     text = extract_text(path)
-    if not text or len(text.strip()) < 40:
+    if not text or len(text.strip()) < 60:
         return
 
-    chunks = chunk_code(text, path)
+    chunks = chunk_text(text, path)
     if not chunks:
         return
 
-    try:
-        rel_path = str(path.relative_to(REPOS_PATH))
-    except ValueError:
-        rel_path = str(path)
-
+    rel_path = str(path.relative_to(WATCH_PATH))
     file_type = ext.lstrip(".") or "text"
+    modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
 
-    # Delete old chunks
+    # Delete old chunks for this file
     try:
-        collection.data.delete_many(
-            where=Filter.by_property("source_path").equal(rel_path)
-        )
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
     except Exception:
         pass
 
-    # Embed and upsert
-    total = 0
+    # Embed and upsert in memory-conservative batches
+    total_indexed = 0
     for i in range(0, len(chunks), BATCH_SIZE):
         batch = chunks[i:i + BATCH_SIZE]
         embeddings = embed_batch(batch)
         if not embeddings:
             continue
 
-        objects = []
-        for j, (text, embedding) in enumerate(zip(batch, embeddings)):
-            chunk_id = hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
-            objects.append(weaviate.classes.data.DataObject(
-                properties={
-                    "content": text,
-                    "source_path": rel_path,
-                    "file_name": path.name,
-                    "file_type": file_type,
-                    "repo": repo_name,
-                    "chunk_index": i + j,
-                },
-                uuid=weaviate.util.generate_uuid5(chunk_id),
-                vector=embedding,
-            ))
+        ids = [
+            hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
+            for j in range(len(batch))
+        ]
+
+        metadatas = [{
+            "source_path": rel_path,
+            "file_name": path.name,
+            "file_type": file_type,
+            "modified": modified,
+            "chunk_index": i + j,
+        } for j in range(len(batch))]
 
         try:
-            collection.data.insert_many(objects)
-            total += len(batch)
+            collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=batch,
+                metadatas=metadatas
+            )
+            total_indexed += len(batch)
         except Exception as e:
-            log.error(f"Upsert failed: {e}")
+            log.error(f"ChromaDB upsert failed: {e}")
 
         time.sleep(0.1)
 
     state[state_key] = current_hash
-    log.info(f"✅ {rel_path} → {total} chunks")
+    log.info(f"✅ {path.name} → {total_indexed} chunks indexed")
 
-def remove_file_from_index(path, state):
+def remove_file(path, state):
+    path = Path(path)
     try:
-        rel_path = str(path.relative_to(REPOS_PATH))
-        collection.data.delete_many(
-            where=Filter.by_property("source_path").equal(rel_path)
-        )
+        rel_path = str(path.relative_to(WATCH_PATH))
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
+            log.info(f"🗑️  Removed: {rel_path}")
     except Exception:
         pass
     state.pop(str(path), None)
 
 # ── Bulk scan ─────────────────────────────────────────────────────────────────
-def scan_repo(repo_path, repo_name, state):
-    files = []
-    for f in repo_path.rglob("*"):
-        if any(part in SKIP_DIRS for part in f.parts):
-            continue
+def bulk_scan(state):
+    log.info(f"Scanning {WATCH_PATH}...")
+    all_files = list(WATCH_PATH.rglob("*"))
+
+    supported = []
+    for f in all_files:
         if not f.is_file():
+            continue
+        # Skip junk dirs
+        if any(part in SKIP_DIRS for part in f.parts):
             continue
         ext = f.suffix.lower()
         if ext in SUPPORTED or f.name in SUPPORTED_FILENAMES:
-            files.append(f)
+            supported.append(f)
 
-    log.info(f"  📁 {repo_name}: {len(files)} files to check")
-    for f in files:
-        ingest_file(f, repo_name, state)
+    log.info(f"Found {len(supported)} supported files")
 
-def bulk_scan(state):
-    repos = find_repos()
-    log.info(f"Found {len(repos)} repos in {REPOS_PATH}")
+    for i, path in enumerate(supported, 1):
+        log.info(f"[{i}/{len(supported)}]")
+        ingest_file(path, state)
+        if i % 20 == 0:
+            save_state(state)
 
-    for repo_path in repos:
-        repo_name = get_repo_name(repo_path)
-        log.info(f"Scanning: {repo_name}")
-        scan_repo(repo_path, repo_name, state)
-        save_state(state)
+    save_state(state)
+    total = collection.count()
+    log.info(f"✅ Bulk scan complete — {total} total vectors in ChromaDB")
 
-    total = collection.aggregate.over_all().total_count
-    log.info(f"✅ Bulk scan complete — {total} total vectors in 'Repos' collection")
+# ── File watcher ──────────────────────────────────────────────────────────────
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
-# ── Periodic pull + rescan ────────────────────────────────────────────────────
-def run_forever(state):
-    log.info(f"👀 Pulling repo updates every {PULL_INTERVAL // 60} minutes...")
-    while True:
-        time.sleep(PULL_INTERVAL)
-        log.info("🔄 Pulling latest changes...")
-        repos = find_repos()
-        for repo_path in repos:
-            pulled = pull_repo(repo_path)
-            if pulled:
-                repo_name = get_repo_name(repo_path)
-                scan_repo(repo_path, repo_name, state)
-                save_state(state)
+class IngestionHandler(FileSystemEventHandler):
+    def __init__(self, state):
+        self.state = state
+        self._debounce = {}
+
+    def _should_process(self, path):
+        now = time.time()
+        last = self._debounce.get(path, 0)
+        if now - last < 2.0:
+            return False
+        self._debounce[path] = now
+        return True
+
+    def on_modified(self, event):
+        if not event.is_directory and self._should_process(event.src_path):
+            ingest_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_created(self, event):
+        if not event.is_directory and self._should_process(event.src_path):
+            ingest_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            remove_file(event.src_path, self.state)
+            save_state(self.state)
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            remove_file(event.src_path, self.state)
+            if self._should_process(event.dest_path):
+                ingest_file(event.dest_path, self.state)
+            save_state(self.state)
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    log.info("🧠 LifeDB Repo Ingestion Pipeline")
-    log.info(f"   Repos path : {REPOS_PATH}")
-    log.info(f"   Collection : {COLLECTION} (cosine)")
+    log.info("🧠 LifeDB Ingestion Pipeline")
+    log.info(f"   Watch path : {WATCH_PATH}")
+    log.info(f"   ChromaDB   : {CHROMA_HOST}:{CHROMA_PORT}")
+    log.info(f"   Collection : {COLLECTION} (ip space)")
     log.info(f"   Embed model: {EMBED_MODEL}")
     log.info(f"   Extensions : {len(SUPPORTED)} supported")
     log.info(f"   Filenames  : {len(SUPPORTED_FILENAMES)} supported")
 
     if not OPENAI_KEY:
-        log.error("OPENAI_API_KEY not set")
+        log.error("OPENAI_API_KEY not set — check your .env file")
         sys.exit(1)
 
-    if not REPOS_PATH.exists():
-        log.error(f"Repos path does not exist: {REPOS_PATH}")
-        log.error("Run: mkdir -p ~/repos && gh repo list ... | xargs gh repo clone")
+    if not WATCH_PATH.exists():
+        log.error(f"Watch path does not exist: {WATCH_PATH}")
+        log.error("Is Syncthing running? (Phase 2)")
         sys.exit(1)
 
     state = load_state()
     bulk_scan(state)
-    run_forever(state)
+
+    log.info("👀 Watching for real-time changes...")
+    handler = IngestionHandler(state)
+    observer = Observer()
+    observer.schedule(handler, str(WATCH_PATH), recursive=True)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        observer.stop()
+        observer.join()
+
+    log.info("👋 Ingestion pipeline stopped")

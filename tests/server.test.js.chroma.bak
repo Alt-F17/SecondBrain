@@ -2,70 +2,36 @@
  * SecondBrain server.js — Jest + Supertest test suite
  *
  * Covers all API routes and documents known bugs found during code review.
- * External dependencies (weaviate-client, openai, @anthropic-ai/sdk) are mocked
- * so tests run without a live Weaviate instance or API keys.
+ * External dependencies (chromadb, openai, @anthropic-ai/sdk) are mocked
+ * so tests run without a live ChromaDB instance or API keys.
  */
 
 'use strict';
 
-// ── Mock weaviate-client ──────────────────────────────────────────────────────
-// Build fake collection objects that mimic the weaviate-client v3 JS API
-const mockWeaviateQuery = {
-    hybrid: jest.fn().mockResolvedValue({ objects: [] }),
+// ── Mock external dependencies before any require ──────────────────────────
+// chromadb mock: getOrCreateCollection returns a usable fake collection
+const mockChromaCollection = {
+    count:  jest.fn().mockResolvedValue(5),
+    add:    jest.fn().mockResolvedValue({}),
+    upsert: jest.fn().mockResolvedValue({}),
+    query:  jest.fn().mockResolvedValue({
+        ids:       [[]],
+        documents: [[]],
+        metadatas: [[]],
+        distances: [[]]
+    }),
+    get:    jest.fn().mockResolvedValue({ ids: [] }),
+    delete: jest.fn().mockResolvedValue({}),
 };
-const mockWeaviateData = {
-    insert:     jest.fn().mockResolvedValue('fake-uuid'),
-    insertMany: jest.fn().mockResolvedValue({ allResponses: [] }),
-    deleteById: jest.fn().mockResolvedValue(undefined),
-};
+jest.mock('chromadb', () => ({
+    ChromaClient: jest.fn().mockImplementation(() => ({
+        getOrCreateCollection: jest.fn().mockResolvedValue(mockChromaCollection),
+    })),
+}));
 
-function makeMockCollection(name) {
-    return {
-        name,
-        query: mockWeaviateQuery,
-        data:  mockWeaviateData,
-    };
-}
-
-const mockCollections = {
-    exists: jest.fn().mockResolvedValue(true),
-    create: jest.fn().mockResolvedValue({}),
-    get:    jest.fn().mockImplementation((name) => makeMockCollection(name)),
-};
-
-const mockWeaviateClient = {
-    collections: mockCollections,
-};
-
-jest.mock('weaviate-client', () => {
-    const mod = {
-        // Named exports
-        configure: {
-            vectorizer: { none: jest.fn().mockReturnValue({}) },
-            vectorIndex: { hnsw: jest.fn().mockReturnValue({}) },
-        },
-        dataType: { TEXT: 'text', INT: 'int' },
-        vectorDistances: { COSINE: 'cosine' },
-        generateUuid5: jest.fn().mockImplementation((...args) => {
-            // Deterministic fake UUID from args
-            return 'wvt-uuid-' + args.join('-');
-        }),
-    };
-    // Default export: object with connectToCustom
-    mod.default = {
-        connectToCustom: jest.fn().mockResolvedValue(mockWeaviateClient),
-    };
-    return mod;
-});
-
-// ── Mock global fetch (used by collectionCount for REST count) ────────────────
-global.fetch = jest.fn().mockResolvedValue({
-    json: () => Promise.resolve({ totalResults: 5 }),
-});
-
-// ── openai mock: embeddings return a 3072-dim vector; completions stream per test ──
+// openai mock: embeddings return a 1536-dim vector; completions stream is set per test
 const mockEmbeddingCreate = jest.fn().mockResolvedValue({
-    data: [{ embedding: new Array(3072).fill(0.1) }]
+    data: [{ embedding: new Array(1536).fill(0.1) }]
 });
 const mockChatCreate = jest.fn();
 jest.mock('openai', () => ({
@@ -96,7 +62,6 @@ jest.mock('fs', () => ({
 // ── Set env vars and require server ───────────────────────────────────────
 process.env.OPENAI_API_KEY    = 'test-openai-key';
 process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
-process.env.WEAVIATE_URL      = 'http://localhost:8080';
 
 // memories.json and graph.json both start empty in tests
 mockReadFile.mockImplementation((filePath) => {
@@ -106,7 +71,7 @@ mockReadFile.mockImplementation((filePath) => {
 });
 
 const request = require('supertest');
-const { app, CERTAINTY_THRESHOLD, HYBRID_ALPHA, CLAUDE_MODELS, OPENAI_MODELS, GPT5_MODELS } = require('../server');
+const { app, SCORE_THRESHOLD, CLAUDE_MODELS, OPENAI_MODELS, GPT5_MODELS } = require('../server');
 
 // ── Helper: POST a memory and get its id ─────────────────────────────────
 async function createMemory(payload = {}) {
@@ -120,12 +85,8 @@ async function createMemory(payload = {}) {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 describe('Exported constants', () => {
-    test('CERTAINTY_THRESHOLD is 0.70', () => {
-        expect(CERTAINTY_THRESHOLD).toBe(0.70);
-    });
-
-    test('HYBRID_ALPHA is 0.75', () => {
-        expect(HYBRID_ALPHA).toBe(0.75);
+    test('SCORE_THRESHOLD is 0.30', () => {
+        expect(SCORE_THRESHOLD).toBe(0.30);
     });
 
     test('CLAUDE_MODELS contains expected models', () => {
@@ -153,12 +114,6 @@ describe('GET /api/health', () => {
             anthropic: true,
         });
         expect(typeof res.body.timestamp).toBe('string');
-    });
-
-    test('health includes weaviate and memories fields', async () => {
-        const res = await request(app).get('/api/health');
-        expect(res.body).toHaveProperty('weaviate');
-        expect(res.body).toHaveProperty('memories');
     });
 
     test('openai is false when key is missing', async () => {
@@ -203,11 +158,11 @@ describe('POST /api/memories', () => {
         expect(res.body.type).toBe('note');
     });
 
-    test('calls OpenAI embeddings.create with text-embedding-3-large', async () => {
+    test('calls OpenAI embeddings.create with the content', async () => {
         mockEmbeddingCreate.mockClear();
         await request(app).post('/api/memories').send({ content: 'embed me' });
         expect(mockEmbeddingCreate).toHaveBeenCalledWith(
-            expect.objectContaining({ input: 'embed me', model: 'text-embedding-3-large' })
+            expect.objectContaining({ input: 'embed me', model: 'text-embedding-3-small' })
         );
     });
 
@@ -242,7 +197,7 @@ describe('GET /api/memories', () => {
     });
 
     // ── Bug #5: FIXED — embedding vectors stripped from GET /api/memories response ──
-    test('BUG #5 — GET /api/memories no longer exposes 3072-dim embedding vectors', async () => {
+    test('BUG #5 — GET /api/memories no longer exposes 1536-dim embedding vectors', async () => {
         await createMemory({ content: 'embedding leak test' });
         const res = await request(app).get('/api/memories?limit=100');
         const withEmbedding = res.body.results.filter(
@@ -327,14 +282,14 @@ describe('POST /api/search', () => {
 // GET /api/stats
 // ─────────────────────────────────────────────────────────────────────────────
 describe('GET /api/stats', () => {
-    test('returns expected shape with memoriesVectors', async () => {
+    test('returns expected shape', async () => {
         const res = await request(app).get('/api/stats');
         expect(res.status).toBe(200);
         expect(res.body).toMatchObject({
-            total:            expect.any(Number),
-            thisWeek:         expect.any(Number),
-            typeCounts:       expect.any(Object),
-            memoriesVectors:  expect.any(Number),
+            total:        expect.any(Number),
+            thisWeek:     expect.any(Number),
+            typeCounts:   expect.any(Object),
+            chromaVectors: expect.any(Number),
         });
     });
 
@@ -573,6 +528,8 @@ describe('POST /api/chat', () => {
 
     // ── Bug #1: FIXED — SAVE_MEMORY regex now uses \n? (optional newline) ────
     test('BUG #1 — SAVE_MEMORY at line 1 (no leading newline) is now saved', async () => {
+        // regex was /\nSAVE_MEMORY:.../ — fixed to /\n?SAVE_MEMORY:.../ so the
+        // leading newline is optional and a response starting with SAVE_MEMORY works
         const saveLine = 'SAVE_MEMORY:{"type":"note","content":"bug1 test","tags":["bug"]}';
         async function* fakeSaveAtTop() {
             yield { type: 'content_block_delta', delta: { type: 'text_delta', text: saveLine } };
@@ -612,24 +569,18 @@ describe('POST /api/chat', () => {
     });
 
     test('sources array in done event has correct shape', async () => {
-        // Make Weaviate return one mock hit above certainty threshold
-        mockWeaviateQuery.hybrid.mockResolvedValueOnce({
-            objects: [{
-                uuid: 'wvt-uuid-mem-src-1',
-                metadata: { certainty: 0.85, score: 0.9 },
-                properties: {
-                    content: 'some context text',
-                    type: 'note',
-                    tags: 'ai',
-                    timestamp: '2026-01-01T00:00:00.000Z',
-                },
-            }]
+        // Make chroma return one mock hit above threshold
+        mockChromaCollection.query.mockResolvedValueOnce({
+            ids:       [['mem-src-1']],
+            documents: [['some context text']],
+            metadatas: [[{ type: 'note', content: 'some context text', tags: 'ai', timestamp: '2026-01-01T00:00:00.000Z' }]],
+            distances: [[0.75]],
         });
         // All other collections return empty
-        mockWeaviateQuery.hybrid
-            .mockResolvedValueOnce({ objects: [] })
-            .mockResolvedValueOnce({ objects: [] })
-            .mockResolvedValueOnce({ objects: [] });
+        mockChromaCollection.query
+            .mockResolvedValueOnce({ ids: [[]], documents: [[]], metadatas: [[]], distances: [[]] })
+            .mockResolvedValueOnce({ ids: [[]], documents: [[]], metadatas: [[]], distances: [[]] })
+            .mockResolvedValueOnce({ ids: [[]], documents: [[]], metadatas: [[]], distances: [[]] });
 
         async function* fakeStream() {
             yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'citing [Memory #1]' } };
@@ -662,6 +613,8 @@ describe('POST /api/chat', () => {
 
         const res = await request(app).post('/api/chat').send({ message: 'strip test', model: 'claude-sonnet-4-6' });
 
+        // The done event's sources snippets should not contain raw SAVE_MEMORY JSON
+        // BUG #15: the fullText sent in delta events DOES contain SAVE_MEMORY — client must strip it
         const deltas = res.text.split('\n')
             .filter(l => l.startsWith('data:'))
             .map(l => JSON.parse(l.slice(5)))

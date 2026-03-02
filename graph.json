@@ -5,14 +5,14 @@
       "label": "memory",
       "collection": "second-brain",
       "repo": null,
-      "hits": 14
+      "hits": 18
     },
     {
       "id": "second-brain.html",
       "label": "second-brain.html",
       "collection": "lifedb",
       "repo": null,
-      "hits": 28
+      "hits": 31
     },
     {
       "id": "Alt-F17-FelixEgan-Webpage/public/productdesign.html",
@@ -33,7 +33,7 @@
       "label": "server.js",
       "collection": "lifedb",
       "repo": null,
-      "hits": 8
+      "hits": 9
     },
     {
       "id": "Pluto-Personal-Assistant/PLUTOS/Pluto-V4 = BADLLMA/PlutoModelfile4.txt",
@@ -132,7 +132,7 @@
       "id": "memory||second-brain.html",
       "source": "memory",
       "target": "second-brain.html",
-      "weight": 40,
+      "weight": 52,
       "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
     },
     {
@@ -153,7 +153,7 @@
       "id": "second-brain.html||second-brain.html",
       "source": "second-brain.html",
       "target": "second-brain.html",
-      "weight": 51,
+      "weight": 54,
       "query": "(THIS IS A PERFORMANCE TEST) What can you tell me about my personal website?"
     },
     {
@@ -181,7 +181,7 @@
       "id": "memory||server.js",
       "source": "memory",
       "target": "server.js",
-      "weight": 12,
+      "weight": 16,
       "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
     },
     {
@@ -209,7 +209,7 @@
       "id": "second-brain.html||server.js",
       "source": "server.js",
       "target": "second-brain.html",
-      "weight": 8,
+      "weight": 11,
       "query": "Save a memory about the following:\nCobblemon is a minecraft pokemon addon that I"
     },
     {
@@ -251,7 +251,7 @@
       "id": "memory||memory",
       "source": "memory",
       "target": "memory",
-      "weight": 5,
+      "weight": 11,
       "query": "Yeah sure, save that info"
     },
     {

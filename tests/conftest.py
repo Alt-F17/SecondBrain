@@ -1,6 +1,6 @@
 """
 conftest.py — pytest configuration
-Patches chromadb, openai, watchdog before any test module imports ingest.py or media_ingest.py
+Patches weaviate, openai, watchdog before any test module imports ingest.py or media_ingest.py
 """
 import sys
 import types
@@ -9,38 +9,58 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_mock_collection():
+    """Create a mock Weaviate collection with data/aggregate sub-objects."""
     col = MagicMock()
-    col.count.return_value = 0
-    col.add.return_value = None
-    col.upsert.return_value = None
-    col.get.return_value = {"ids": []}
-    col.delete.return_value = None
-    col.query.return_value = {
-        "ids": [[]],
-        "documents": [[]],
-        "metadatas": [[]],
-        "distances": [[]]
-    }
+    # col.data — insert_many, insert, delete_many, delete_by_id
+    col.data.insert_many.return_value = None
+    col.data.insert.return_value = None
+    col.data.delete_many.return_value = None
+    col.data.delete_by_id.return_value = None
+    # col.aggregate.over_all()
+    agg_result = MagicMock()
+    agg_result.total_count = 0
+    col.aggregate.over_all.return_value = agg_result
+    # col.query.hybrid — for search tests
+    col.query.hybrid.return_value = MagicMock(objects=[])
     return col
 
 
-def _install_chromadb_mock():
+def _install_weaviate_mock():
     mock_col = _make_mock_collection()
     mock_client = MagicMock()
-    mock_client.get_or_create_collection.return_value = mock_col
-    mock_client.get_collection.return_value = mock_col
+    mock_client.collections.get.return_value = mock_col
 
-    chroma_mod = types.ModuleType("chromadb")
-    chroma_mod.HttpClient = MagicMock(return_value=mock_client)
+    # Build the weaviate module tree
+    weaviate_mod = types.ModuleType("weaviate")
+    weaviate_mod.connect_to_local = MagicMock(return_value=mock_client)
+    weaviate_mod.util = MagicMock()
+    weaviate_mod.util.generate_uuid5 = MagicMock(side_effect=lambda x: f"uuid-{x}")
 
-    sys.modules["chromadb"] = chroma_mod
+    # weaviate.classes.data.DataObject — used in ingest.py insert_many
+    classes_mod = types.ModuleType("weaviate.classes")
+    data_mod = types.ModuleType("weaviate.classes.data")
+    query_mod = types.ModuleType("weaviate.classes.query")
+
+    data_mod.DataObject = MagicMock(side_effect=lambda **kwargs: kwargs)
+    query_mod.Filter = MagicMock()
+
+    classes_mod.data = data_mod
+    classes_mod.query = query_mod
+
+    weaviate_mod.classes = classes_mod
+
+    sys.modules["weaviate"] = weaviate_mod
+    sys.modules["weaviate.classes"] = classes_mod
+    sys.modules["weaviate.classes.data"] = data_mod
+    sys.modules["weaviate.classes.query"] = query_mod
+
     return mock_col, mock_client
 
 
 def _install_openai_mock():
     mock_openai_client = MagicMock()
     mock_openai_client.embeddings.create.return_value = MagicMock(
-        data=[MagicMock(embedding=[0.1] * 1536)]
+        data=[MagicMock(embedding=[0.1] * 3072)]
     )
     mock_openai_client.chat.completions.create.return_value = MagicMock(
         choices=[MagicMock(message=MagicMock(content="Mock description"))]
@@ -72,7 +92,7 @@ def _install_watchdog_mock():
 
 
 # Install mocks BEFORE any ingest module is loaded
-_install_chromadb_mock()
+_install_weaviate_mock()
 _install_openai_mock()
 _install_watchdog_mock()
 

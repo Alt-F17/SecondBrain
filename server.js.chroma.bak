@@ -1,8 +1,7 @@
 const express  = require('express');
 const cors     = require('cors');
 const { OpenAI } = require('openai');
-const weaviate = require('weaviate-client').default;
-const { configure, dataType, vectorDistances, generateUuid5 } = require('weaviate-client');
+const { ChromaClient } = require('chromadb');
 const Anthropic = require('@anthropic-ai/sdk');
 const dotenv   = require('dotenv');
 const fs       = require('fs').promises;
@@ -22,109 +21,43 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const CLAUDE_MODELS = new Set(['claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
 const OPENAI_MODELS = new Set(['gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o-mini']);
-const GPT5_MODELS   = new Set(['gpt-5-nano']);
+const GPT5_MODELS   = new Set(['gpt-5-nano']); // needs max_completion_tokens not max_tokens
 
-// ── Weaviate collections ──────────────────────────────────────────────────────
-let weaviateClient;
-let memoriesCol;  // SecondBrain  (memories)
-let lifedbCol;    // Lifedb       (synced files)
-let reposCol;     // Repos        (github repos)
-let mediaCol;     // Media        (photos, audio, video)
+// ── ChromaDB collections ──────────────────────────────────────────────────────
+let chromaClient;
+let chromaCollection;  // second-brain (memories)
+let lifedbCollection;  // lifedb       (synced files)
+let reposCollection;   // repos        (github repos)
+let mediaCollection;   // media        (photos, audio, video)
 
-const EMBED_MODEL = 'text-embedding-3-large';   // 3072 dims
-const CERTAINTY_THRESHOLD = 0.70;
-const HYBRID_ALPHA = 0.75;                       // 75 % vector, 25 % BM25
+// ip-space inner product with text-embedding-3-small (normalized) ≈ cosine similarity.
+// Good matches typically score 0.35–0.65; 0.50 was far too aggressive.
+const SCORE_THRESHOLD = 0.30;
 
-const COLLECTION_SCHEMA = [
-    {
-        name: 'SecondBrain',
-        properties: [
-            { name: 'content',   dataType: dataType.TEXT },
-            { name: 'type',      dataType: dataType.TEXT },
-            { name: 'tags',      dataType: dataType.TEXT },
-            { name: 'timestamp', dataType: dataType.TEXT },
-        ],
-    },
-    {
-        name: 'Lifedb',
-        properties: [
-            { name: 'content',     dataType: dataType.TEXT },
-            { name: 'source_path', dataType: dataType.TEXT },
-            { name: 'file_name',   dataType: dataType.TEXT },
-            { name: 'file_type',   dataType: dataType.TEXT },
-            { name: 'modified',    dataType: dataType.TEXT },
-            { name: 'chunk_index', dataType: dataType.INT },
-        ],
-    },
-    {
-        name: 'Repos',
-        properties: [
-            { name: 'content',     dataType: dataType.TEXT },
-            { name: 'source_path', dataType: dataType.TEXT },
-            { name: 'file_name',   dataType: dataType.TEXT },
-            { name: 'file_type',   dataType: dataType.TEXT },
-            { name: 'repo',        dataType: dataType.TEXT },
-            { name: 'chunk_index', dataType: dataType.INT },
-        ],
-    },
-    {
-        name: 'Media',
-        properties: [
-            { name: 'content',     dataType: dataType.TEXT },
-            { name: 'source_path', dataType: dataType.TEXT },
-            { name: 'file_name',   dataType: dataType.TEXT },
-            { name: 'file_type',   dataType: dataType.TEXT },
-            { name: 'modified',    dataType: dataType.TEXT },
-            { name: 'thumb_path',  dataType: dataType.TEXT },
-            { name: 'collection',  dataType: dataType.TEXT },
-        ],
-    },
-];
-
-const initWeaviate = async () => {
+const initChroma = async () => {
     try {
-        const url = new URL(process.env.WEAVIATE_URL || 'http://localhost:8080');
-        weaviateClient = await weaviate.connectToCustom({
-            httpHost: url.hostname,
-            httpPort: parseInt(url.port) || 8080,
-            httpSecure: url.protocol === 'https:',
-            grpcHost: url.hostname,
-            grpcPort: 50051,
-            grpcSecure: false,
+        chromaClient = new ChromaClient({ path: process.env.CHROMA_URL || 'http://localhost:8000' });
+
+        chromaCollection = await chromaClient.getOrCreateCollection({
+            name: 'second-brain',
+            metadata: { 'hnsw:space': 'ip' }
         });
+        console.log(`✅ Memories  : ${await chromaCollection.count()} vectors`);
 
-        for (const schema of COLLECTION_SCHEMA) {
-            const exists = await weaviateClient.collections.exists(schema.name);
-            if (!exists) {
-                await weaviateClient.collections.create({
-                    name: schema.name,
-                    properties: schema.properties,
-                    vectorizers: configure.vectorizer.none({
-                        vectorIndexConfig: configure.vectorIndex.hnsw({
-                            distanceMetric: vectorDistances.COSINE
-                        })
-                    })
-                });
-                console.log(`✅ Created collection: ${schema.name}`);
-            }
-        }
-
-        memoriesCol = weaviateClient.collections.get('SecondBrain');
-        lifedbCol   = weaviateClient.collections.get('Lifedb');
-        reposCol    = weaviateClient.collections.get('Repos');
-        mediaCol    = weaviateClient.collections.get('Media');
-
-        // Log vector counts
-        for (const [label, col] of [['Memories', memoriesCol], ['Lifedb', lifedbCol], ['Repos', reposCol], ['Media', mediaCol]]) {
+        for (const [name, setter] of [
+            ['lifedb', v => lifedbCollection = v],
+            ['repos',  v => reposCollection  = v],
+            ['media',  v => mediaCollection  = v],
+        ]) {
             try {
-                const count = await collectionCount(col);
-                console.log(`✅ ${label.padEnd(8)}: ${count} vectors`);
-            } catch {
-                console.log(`📝 ${label} collection ready`);
-            }
+                const col = await chromaClient.getOrCreateCollection({ name, metadata: { 'hnsw:space': 'ip' } });
+                setter(col);
+                console.log(`✅ ${name.padEnd(8)}: ${await col.count()} vectors`);
+            } catch { console.log(`📝 ${name} collection not available yet`); }
         }
+
     } catch (err) {
-        console.error('❌ Weaviate init failed:', err.message);
+        console.error('❌ Chroma init failed:', err.message);
     }
 };
 
@@ -146,12 +79,14 @@ const saveLocalMemories = async () => {
 // ── Embedding ─────────────────────────────────────────────────────────────────
 async function generateEmbedding(text) {
     try {
-        const r = await openai.embeddings.create({ model: EMBED_MODEL, input: text });
+        const r = await openai.embeddings.create({ model: 'text-embedding-3-small', input: text });
         return r.data[0].embedding;
     } catch (e) { console.error('Embedding failed:', e.message); return null; }
 }
 
 // ── Query rewriting ───────────────────────────────────────────────────────────
+// Generates 2 alternative phrasings so different chunks surface for the same
+// intent. Falls back to the original message if the rewrite fails.
 async function rewriteQueryForSearch(message) {
     try {
         const r = await openai.chat.completions.create({
@@ -174,43 +109,39 @@ async function rewriteQueryForSearch(message) {
     return [message];
 }
 
-// ── Weaviate count helper ─────────────────────────────────────────────────────
-async function collectionCount(col) {
-    if (!col) return 0;
-    try {
-        // Use REST API for reliable counting
-        const url = process.env.WEAVIATE_URL || 'http://localhost:8080';
-        const colName = col.name;
-        const res = await fetch(`${url}/v1/objects?class=${colName}&limit=0`);
-        const data = await res.json();
-        return data.totalResults || 0;
-    } catch {
-        return 0;
-    }
+// ── Keyword boost ─────────────────────────────────────────────────────────────
+// Adds up to +0.08 to score for chunks that contain literal query words.
+// Bridges the semantic/lexical gap without a full BM25 implementation.
+function applyKeywordBoost(hits, query) {
+    const words = query.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    if (words.length === 0) return hits;
+    return hits.map(h => {
+        const content = (h.content || '').toLowerCase();
+        const matched = words.filter(w => content.includes(w)).length;
+        return { ...h, score: h.score + 0.08 * (matched / words.length) };
+    });
 }
 
-// ── Hybrid search across all collections ──────────────────────────────────────
+// ── Parallel search ───────────────────────────────────────────────────────────
+// queryEmbeddings: a single 1-D float[] OR an array of 1-D float[] (multi-query).
+// Multi-query results are merged by ID keeping each chunk's best score.
 async function searchAllCollections(queryEmbeddings, limit, originalQuery = '') {
+    // Normalise to 2-D array
     const embeddings = (queryEmbeddings.length > 0 && !Array.isArray(queryEmbeddings[0]))
         ? [queryEmbeddings]
         : queryEmbeddings;
 
+    // Oversample heavily so the threshold filter doesn't starve results.
+    // Old value was Math.ceil(limit * 0.6) which could be LESS than limit.
     const n = Math.min(30, Math.max(10, limit * 3));
 
-    const hybridQuery = async (col, emb, query) => {
-        if (!col) return [];
-        try {
-            const res = await col.query.hybrid(query, {
-                vector: emb,
-                alpha: HYBRID_ALPHA,
-                limit: n,
-                returnMetadata: ['certainty', 'score'],
-                returnProperties: true,
-            });
-            return res.objects || [];
-        } catch { return []; }
-    };
+    const colQuery = (col, emb) => col ? col.query({
+        queryEmbeddings: [emb],
+        nResults: n,
+        include: ['metadatas', 'documents', 'distances']
+    }).catch(() => null) : Promise.resolve(null);
 
+    // id → best-scoring hit object; deduplicates across multi-query runs
     const seen = new Map();
     const addHit = (hit) => {
         const prev = seen.get(hit.id);
@@ -219,61 +150,61 @@ async function searchAllCollections(queryEmbeddings, limit, originalQuery = '') 
 
     for (const emb of embeddings) {
         const [memRaw, lifeRaw, reposRaw, mediaRaw] = await Promise.all([
-            hybridQuery(memoriesCol, emb, originalQuery),
-            hybridQuery(lifedbCol, emb, originalQuery),
-            hybridQuery(reposCol, emb, originalQuery),
-            hybridQuery(mediaCol, emb, originalQuery),
+            colQuery(chromaCollection, emb),
+            colQuery(lifedbCollection, emb),
+            colQuery(reposCollection, emb),
+            colQuery(mediaCollection, emb),
         ]);
 
         const push = (raw, mapper) => {
-            for (const obj of raw) {
-                const certainty = obj.metadata?.certainty ?? 0;
-                if (certainty >= CERTAINTY_THRESHOLD) {
-                    addHit(mapper(obj, certainty));
-                }
-            }
+            if (!raw?.ids?.[0]) return;
+            raw.ids[0].forEach((id, i) => {
+                const score = raw.distances[0][i];
+                if (score >= SCORE_THRESHOLD) addHit(mapper(id, i, score, raw));
+            });
         };
 
-        push(memRaw, (obj, certainty) => ({
-            id: obj.uuid, score: certainty, source: 'memory', collection: 'second-brain',
-            type: obj.properties?.type || 'note',
-            content: obj.properties?.content || '',
-            tags: obj.properties?.tags ? obj.properties.tags.split(',').filter(Boolean) : [],
-            timestamp: obj.properties?.timestamp || null,
+        push(memRaw, (id, i, score, r) => ({
+            id, score, source: 'memory', collection: 'second-brain',
+            type: r.metadatas[0][i]?.type || 'note',
+            content: r.metadatas[0][i]?.content || r.documents[0][i],
+            tags: r.metadatas[0][i]?.tags ? r.metadatas[0][i].tags.split(',').filter(Boolean) : [],
+            timestamp: r.metadatas[0][i]?.timestamp || null,
         }));
 
-        push(lifeRaw, (obj, certainty) => ({
-            id: obj.uuid, score: certainty, collection: 'lifedb',
-            type: obj.properties?.file_type || 'file',
-            content: obj.properties?.content || '',
-            tags: [], timestamp: obj.properties?.modified || null,
-            source: obj.properties?.source_path || 'unknown',
-            fileName: obj.properties?.file_name || null,
+        push(lifeRaw, (id, i, score, r) => ({
+            id, score, collection: 'lifedb',
+            type: r.metadatas[0][i]?.file_type || 'file',
+            content: r.documents[0][i],
+            tags: [], timestamp: r.metadatas[0][i]?.modified || null,
+            source: r.metadatas[0][i]?.source_path || 'unknown',
+            fileName: r.metadatas[0][i]?.file_name || null,
         }));
 
-        push(reposRaw, (obj, certainty) => ({
-            id: obj.uuid, score: certainty, collection: 'repos',
-            type: obj.properties?.file_type || 'code',
-            content: obj.properties?.content || '',
-            tags: [obj.properties?.repo || ''].filter(Boolean),
+        push(reposRaw, (id, i, score, r) => ({
+            id, score, collection: 'repos',
+            type: r.metadatas[0][i]?.file_type || 'code',
+            content: r.documents[0][i],
+            tags: [r.metadatas[0][i]?.repo || ''].filter(Boolean),
             timestamp: null,
-            source: obj.properties?.source_path || 'unknown',
-            fileName: obj.properties?.file_name || null,
-            repo: obj.properties?.repo || null,
+            source: r.metadatas[0][i]?.source_path || 'unknown',
+            fileName: r.metadatas[0][i]?.file_name || null,
+            repo: r.metadatas[0][i]?.repo || null,
         }));
 
-        push(mediaRaw, (obj, certainty) => ({
-            id: obj.uuid, score: certainty, collection: 'media',
-            type: obj.properties?.file_type || 'image',
-            content: obj.properties?.content || '',
-            tags: [], timestamp: obj.properties?.modified || null,
-            source: obj.properties?.source_path || 'unknown',
-            fileName: obj.properties?.file_name || null,
-            thumbPath: obj.properties?.thumb_path || null,
+        push(mediaRaw, (id, i, score, r) => ({
+            id, score, collection: 'media',
+            type: r.metadatas[0][i]?.file_type || 'image',
+            content: r.documents[0][i],
+            tags: [], timestamp: r.metadatas[0][i]?.modified || null,
+            source: r.metadatas[0][i]?.source_path || 'unknown',
+            fileName: r.metadatas[0][i]?.file_name || null,
+            thumbPath: r.metadatas[0][i]?.thumb_path || null,
         }));
     }
 
     let hits = [...seen.values()];
+    if (originalQuery) hits = applyKeywordBoost(hits, originalQuery);
     return hits.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
@@ -281,24 +212,20 @@ async function searchAllCollections(queryEmbeddings, limit, originalQuery = '') 
 
 // Health
 app.get('/api/health', async (req, res) => {
-    const ping = async (col) => {
-        if (!col) return false;
-        try { await collectionCount(col); return true; } catch { return false; }
-    };
+    const ping = async (col) => { try { await col?.count(); return !!col; } catch { return false; } };
     res.json({
         status: 'ok',
-        weaviate: await ping(memoriesCol),
-        memories: await ping(memoriesCol),
-        lifedb: await ping(lifedbCol),
-        repos:  await ping(reposCol),
-        media:  await ping(mediaCol),
+        chroma: await ping(chromaCollection),
+        lifedb: await ping(lifedbCollection),
+        repos:  await ping(reposCollection),
+        media:  await ping(mediaCollection),
         openai: !!process.env.OPENAI_API_KEY,
         anthropic: !!process.env.ANTHROPIC_API_KEY,
         timestamp: new Date().toISOString()
     });
 });
 
-// Whisper key
+// Whisper key — read from .env, never hardcoded in frontend
 app.get('/api/config/whisper-key', (req, res) => {
     res.json({ key: process.env.OPENAI_API_KEY || '' });
 });
@@ -318,21 +245,15 @@ app.post('/api/memories', async (req, res) => {
             embedding
         };
 
-        if (memoriesCol && embedding) {
+        if (chromaCollection && embedding) {
             try {
-                const uuid = generateUuid5('SecondBrain', memory.id);
-                await memoriesCol.data.insert({
-                    id: uuid,
-                    properties: {
-                        content,
-                        type: memory.type,
-                        tags: memory.tags.join(','),
-                        timestamp: memory.timestamp,
-                    },
-                    vectors: embedding,
+                await chromaCollection.add({
+                    ids: [memory.id], embeddings: [embedding],
+                    metadatas: [{ type: memory.type, content, tags: memory.tags.join(','), timestamp: memory.timestamp }],
+                    documents: [content]
                 });
-                console.log(`✅ Saved to Weaviate: ${memory.id}`);
-            } catch (e) { console.error('Weaviate save failed:', e.message); }
+                console.log(`✅ Saved to Chroma: ${memory.id}`);
+            } catch (e) { console.error('Chroma save failed:', e.message); }
         }
 
         localMemories.push(memory);
@@ -350,7 +271,7 @@ app.post('/api/search', async (req, res) => {
         const emb = await generateEmbedding(query);
         if (emb) {
             const results = await searchAllCollections([emb], limit, query);
-            console.log(`🔍 Hybrid: ${results.length} results`);
+            console.log(`🔍 Semantic: ${results.length} results`);
             return res.json(results);
         }
 
@@ -369,7 +290,7 @@ app.get('/api/memories', async (req, res) => {
         const results = [...localMemories]
             .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
             .slice(Number(offset), Number(offset) + parseInt(limit))
-            .map(({ embedding, ...rest }) => rest);
+            .map(({ embedding, ...rest }) => rest); // Bug #5 fix: strip 1536-dim vectors from API response
         res.json({ total: localMemories.length, results });
     } catch (e) { res.status(500).json({ error: 'Failed to retrieve memories' }); }
 });
@@ -386,10 +307,7 @@ app.delete('/api/memories/:id', async (req, res) => {
     try {
         localMemories = localMemories.filter(m => m.id !== req.params.id);
         await saveLocalMemories();
-        try {
-            const uuid = generateUuid5('SecondBrain', req.params.id);
-            await memoriesCol?.data.deleteById(uuid);
-        } catch {}
+        try { await chromaCollection?.delete({ ids: [req.params.id] }); } catch {}
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: 'Failed to delete' }); }
 });
@@ -401,14 +319,16 @@ app.get('/api/stats', async (req, res) => {
         const typeCounts = {};
         localMemories.forEach(m => { typeCounts[m.type] = (typeCounts[m.type] || 0) + 1; });
 
+        const count = async (col) => { try { return await col?.count() || 0; } catch { return 0; } };
+
         res.json({
             total: localMemories.length,
             thisWeek: localMemories.filter(m => new Date(m.timestamp) > weekAgo).length,
             typeCounts,
-            memoriesVectors: await collectionCount(memoriesCol),
-            lifedbVectors:   await collectionCount(lifedbCol),
-            reposVectors:    await collectionCount(reposCol),
-            mediaVectors:    await collectionCount(mediaCol),
+            chromaVectors: await count(chromaCollection),
+            lifedbVectors: await count(lifedbCollection),
+            reposVectors:  await count(reposCollection),
+            mediaVectors:  await count(mediaCollection),
         });
     } catch (e) { res.status(500).json({ error: 'Stats failed' }); }
 });
@@ -420,32 +340,25 @@ app.post('/api/import', async (req, res) => {
     try {
         const { memories } = req.body;
         if (!Array.isArray(memories)) return res.status(400).json({ error: 'Invalid format' });
-        let weaviateImported = 0;
+        let chromaImported = 0;
+        // Bug #2 fix: build set of existing IDs to prevent duplicate entries in localMemories
         const existingIds = new Set(localMemories.map(m => m.id));
         for (const m of memories) {
             if (!m.embedding) m.embedding = await generateEmbedding(m.content);
-            if (memoriesCol && m.embedding) {
+            if (chromaCollection && m.embedding) {
                 try {
-                    const uuid = generateUuid5('SecondBrain', m.id);
-                    try { await memoriesCol.data.deleteById(uuid); } catch {}
-                    await memoriesCol.data.insert({
-                        id: uuid,
-                        properties: {
-                            content: m.content,
-                            type: m.type,
-                            tags: (m.tags || []).join(','),
-                            timestamp: m.timestamp,
-                        },
-                        vectors: m.embedding,
-                    });
-                    weaviateImported++;
+                    // Bug #2 fix: use upsert so re-imports update rather than throw on duplicate Chroma IDs
+                    // Bug #3 fix: guard against undefined tags with (m.tags || [])
+                    await chromaCollection.upsert({ ids: [m.id], embeddings: [m.embedding], metadatas: [{ type: m.type, content: m.content, tags: (m.tags || []).join(','), timestamp: m.timestamp }], documents: [m.content] });
+                    chromaImported++;
                 } catch {}
             }
         }
+        // Bug #2 fix: only push memories whose IDs don't already exist locally
         const newMemories = memories.filter(m => !existingIds.has(m.id));
         localMemories.push(...newMemories);
         await saveLocalMemories();
-        res.json({ success: true, imported: newMemories.length, weaviateImported });
+        res.json({ success: true, imported: newMemories.length, chromaImported });
     } catch (e) { res.status(500).json({ error: 'Import failed' }); }
 });
 
@@ -459,12 +372,13 @@ app.post('/api/chat', async (req, res) => {
         const useOpenAI = OPENAI_MODELS.has(model);
         if (!useClaude && !useOpenAI) return res.status(400).json({ error: `Unknown model: ${model}` });
 
-        // Multi-query retrieval
+        // Multi-query retrieval: rewrite the message into 2-3 phrasings,
+        // batch-embed them all, search with each, deduplicate by best score.
         let context = [];
         try {
             const queries = await rewriteQueryForSearch(message);
             const batchEmb = await openai.embeddings.create({
-                model: EMBED_MODEL, input: queries,
+                model: 'text-embedding-3-small', input: queries,
             });
             const embeddings = batchEmb.data.map(d => d.embedding);
             context = await searchAllCollections(embeddings, 8, message);
@@ -516,6 +430,8 @@ ${contextBlock}`;
                 }
             }
         } else {
+            // gpt-5 family uses max_completion_tokens; gpt-4 family uses max_tokens
+            // Bug #4 fix: use the authoritative GPT5_MODELS Set instead of startsWith
             const isGpt5 = GPT5_MODELS.has(model);
             const streamParams = {
                 model,
@@ -535,6 +451,8 @@ ${contextBlock}`;
 
         // Extract and save SAVE_MEMORY command if present
         let savedMemory = null;
+        // Bug #1 fix: \n? makes the leading newline optional so SAVE_MEMORY at the very
+        // start of the response (no preceding newline) is still detected
         const memMatch = fullText.match(/\n?SAVE_MEMORY:(\{[^\n]+\})/);
         if (memMatch) {
             try {
@@ -542,18 +460,8 @@ ${contextBlock}`;
                 if (memData.content) {
                     const memory = { id: Date.now().toString(), type: memData.type || 'note', content: memData.content, tags: memData.tags || [], timestamp: new Date().toISOString() };
                     const memEmb = await generateEmbedding(memory.content);
-                    if (memoriesCol && memEmb) {
-                        const uuid = generateUuid5('SecondBrain', memory.id);
-                        await memoriesCol.data.insert({
-                            id: uuid,
-                            properties: {
-                                content: memory.content,
-                                type: memory.type,
-                                tags: memory.tags.join(','),
-                                timestamp: memory.timestamp,
-                            },
-                            vectors: memEmb,
-                        });
+                    if (chromaCollection && memEmb) {
+                        await chromaCollection.add({ ids: [memory.id], embeddings: [memEmb], metadatas: [{ type: memory.type, content: memory.content, tags: memory.tags.join(','), timestamp: memory.timestamp }], documents: [memory.content] });
                     }
                     localMemories.push({ ...memory, embedding: memEmb });
                     await saveLocalMemories();
@@ -574,8 +482,8 @@ ${contextBlock}`;
                 fileName:   h.fileName   || null,
                 repo:       h.repo       || null,
                 thumbPath:  h.thumbPath  || null,
-                content:    h.content    || '',
-                snippet:    (h.content || '').slice(0, 120).replace(/\n/g, ' ')
+                content:    h.content    || '',          // full chunk for modal
+                snippet:    (h.content || '').slice(0, 120).replace(/\n/g, ' ') // preview
             })),
             savedMemory
         })}\n\n`);
@@ -603,6 +511,7 @@ app.get('/api/graph', async (req, res) => {
 app.post('/api/graph/edge', async (req, res) => {
     try {
         const { sources, query } = req.body;
+        // Bug #6 fix: validate sources before iterating — null/undefined crashes with TypeError
         if (!Array.isArray(sources)) {
             return res.status(400).json({ error: 'sources must be a non-empty array' });
         }
@@ -637,21 +546,19 @@ app.post('/api/graph/edge', async (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 async function start() {
     await loadLocalMemories();
-    await initWeaviate();
+    await initChroma();
     app.listen(PORT, () => {
         console.log(`\n🚀 Second Brain API  http://localhost:${PORT}`);
-        console.log(`🔌 SecondBrain : ${memoriesCol ? 'ok' : 'unavailable'}`);
-        console.log(`🧠 Lifedb      : ${lifedbCol ? 'ok' : 'unavailable'}`);
-        console.log(`📦 Repos       : ${reposCol  ? 'ok' : 'unavailable'}`);
-        console.log(`📸 Media       : ${mediaCol  ? 'ok' : 'unavailable'}`);
-        console.log(`🤖 OpenAI      : ${process.env.OPENAI_API_KEY    ? 'ok' : 'MISSING'}`);
-        console.log(`🧬 Anthropic   : ${process.env.ANTHROPIC_API_KEY ? 'ok' : 'MISSING'}`);
-        console.log(`🔧 Embed model : ${EMBED_MODEL}`);
-        console.log(`🎯 Certainty   : ${CERTAINTY_THRESHOLD}`);
-        console.log(`⚖️  Hybrid α    : ${HYBRID_ALPHA}\n`);
+        console.log(`🔌 second-brain : ${chromaCollection ? 'ok' : 'unavailable'}`);
+        console.log(`🧠 lifedb       : ${lifedbCollection ? 'ok' : 'unavailable'}`);
+        console.log(`📦 repos        : ${reposCollection  ? 'ok' : 'unavailable'}`);
+        console.log(`📸 media        : ${mediaCollection  ? 'ok' : 'unavailable'}`);
+        console.log(`🤖 OpenAI       : ${process.env.OPENAI_API_KEY    ? 'ok' : 'MISSING'}`);
+        console.log(`🧬 Anthropic    : ${process.env.ANTHROPIC_API_KEY ? 'ok' : 'MISSING'}`);
+        console.log(`🎯 Threshold    : ${SCORE_THRESHOLD}\n`);
     });
 }
 
 if (require.main === module) { start(); }
 
-module.exports = { app, generateEmbedding, searchAllCollections, CERTAINTY_THRESHOLD, HYBRID_ALPHA, CLAUDE_MODELS, OPENAI_MODELS, GPT5_MODELS };
+module.exports = { app, generateEmbedding, searchAllCollections, SCORE_THRESHOLD, CLAUDE_MODELS, OPENAI_MODELS, GPT5_MODELS };

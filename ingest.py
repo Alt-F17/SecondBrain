@@ -2,7 +2,7 @@
 """
 LifeDB Ingestion Pipeline — Phase 3
 Watches ~/lifedb/, chunks files intelligently by type,
-embeds via OpenAI, upserts into ChromaDB 'lifedb' collection.
+embeds via OpenAI, upserts into Weaviate 'Lifedb' collection.
 Memory-conservative design for 4GB RAM machines.
 """
 
@@ -25,12 +25,13 @@ log = logging.getLogger("lifedb")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WATCH_PATH    = Path.home() / "lifedb"
-CHROMA_HOST   = "localhost"
-CHROMA_PORT   = 8000
-COLLECTION    = "lifedb"
-EMBED_MODEL   = "text-embedding-3-small"
-CHUNK_CHARS   = 1800
-CHUNK_OVERLAP = 200
+COLLECTION    = "Lifedb"
+EMBED_MODEL   = "text-embedding-3-large"
+# Smaller chunks produce more focused embeddings = better retrieval precision.
+# 1800-char chunks average over too many topics. 800 chars stays on one idea.
+# After changing this, re-ingest: stop the watcher, delete chroma lifedb collection, restart.
+CHUNK_CHARS   = 800
+CHUNK_OVERLAP = 80
 BATCH_SIZE    = 10
 MAX_FILE_MB   = 10
 STATE_FILE    = Path.home() / "SecondBrain" / ".ingest_state.json"
@@ -230,14 +231,12 @@ SKIP_DIRS = {
 }
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-import chromadb
+import weaviate
+from weaviate.classes.query import Filter
 from openai import OpenAI
 
-chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-collection = chroma_client.get_or_create_collection(
-    name=COLLECTION,
-    metadata={"hnsw:space": "ip"}
-)
+weaviate_client = weaviate.connect_to_local()
+collection = weaviate_client.collections.get(COLLECTION)
 openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # ── State management ──────────────────────────────────────────────────────────
@@ -497,9 +496,9 @@ def ingest_file(path, state):
 
     # Delete old chunks for this file
     try:
-        existing = collection.get(where={"source_path": rel_path})
-        if existing["ids"]:
-            collection.delete(ids=existing["ids"])
+        collection.data.delete_many(
+            where=Filter.by_property("source_path").equal(rel_path)
+        )
     except Exception:
         pass
 
@@ -511,29 +510,27 @@ def ingest_file(path, state):
         if not embeddings:
             continue
 
-        ids = [
-            hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
-            for j in range(len(batch))
-        ]
-
-        metadatas = [{
-            "source_path": rel_path,
-            "file_name": path.name,
-            "file_type": file_type,
-            "modified": modified,
-            "chunk_index": i + j,
-        } for j in range(len(batch))]
+        objects = []
+        for j, (text, embedding) in enumerate(zip(batch, embeddings)):
+            chunk_id = hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
+            objects.append(weaviate.classes.data.DataObject(
+                properties={
+                    "content": text,
+                    "source_path": rel_path,
+                    "file_name": path.name,
+                    "file_type": file_type,
+                    "modified": modified,
+                    "chunk_index": i + j,
+                },
+                uuid=weaviate.util.generate_uuid5(chunk_id),
+                vector=embedding,
+            ))
 
         try:
-            collection.add(
-                ids=ids,
-                embeddings=embeddings,
-                documents=batch,
-                metadatas=metadatas
-            )
+            collection.data.insert_many(objects)
             total_indexed += len(batch)
         except Exception as e:
-            log.error(f"ChromaDB upsert failed: {e}")
+            log.error(f"Weaviate upsert failed: {e}")
 
         time.sleep(0.1)
 
@@ -544,10 +541,10 @@ def remove_file(path, state):
     path = Path(path)
     try:
         rel_path = str(path.relative_to(WATCH_PATH))
-        existing = collection.get(where={"source_path": rel_path})
-        if existing["ids"]:
-            collection.delete(ids=existing["ids"])
-            log.info(f"🗑️  Removed: {rel_path}")
+        collection.data.delete_many(
+            where=Filter.by_property("source_path").equal(rel_path)
+        )
+        log.info(f"🗑️  Removed: {rel_path}")
     except Exception:
         pass
     state.pop(str(path), None)
@@ -577,8 +574,8 @@ def bulk_scan(state):
             save_state(state)
 
     save_state(state)
-    total = collection.count()
-    log.info(f"✅ Bulk scan complete — {total} total vectors in ChromaDB")
+    total = collection.aggregate.over_all().total_count
+    log.info(f"✅ Bulk scan complete — {total} total vectors in Weaviate")
 
 # ── File watcher ──────────────────────────────────────────────────────────────
 from watchdog.observers import Observer
@@ -623,8 +620,8 @@ class IngestionHandler(FileSystemEventHandler):
 if __name__ == "__main__":
     log.info("🧠 LifeDB Ingestion Pipeline")
     log.info(f"   Watch path : {WATCH_PATH}")
-    log.info(f"   ChromaDB   : {CHROMA_HOST}:{CHROMA_PORT}")
-    log.info(f"   Collection : {COLLECTION} (ip space)")
+    log.info(f"   Weaviate   : localhost:8080")
+    log.info(f"   Collection : {COLLECTION} (cosine)")
     log.info(f"   Embed model: {EMBED_MODEL}")
     log.info(f"   Extensions : {len(SUPPORTED)} supported")
     log.info(f"   Filenames  : {len(SUPPORTED_FILENAMES)} supported")

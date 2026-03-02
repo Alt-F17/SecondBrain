@@ -2,7 +2,7 @@
 """
 media_ingest.py — Phase 6 media ingestion
 Watches ~/lifedb/ for images, audio, video
-Describes with Vision API / Whisper, embeds, stores in Weaviate 'Media' collection
+Describes with Vision API / Whisper, embeds, stores in ChromaDB 'media' collection
 """
 
 from dotenv import load_dotenv
@@ -18,8 +18,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-import weaviate
-from weaviate.classes.query import Filter
+import chromadb
 from openai import OpenAI
 from PIL import Image
 from watchdog.observers import Observer
@@ -27,8 +26,9 @@ from watchdog.events import FileSystemEventHandler
 
 # ── Config ────────────────────────────────────────────────────────────────────
 LIFEDB_PATH  = Path.home() / 'lifedb'
-COLLECTION   = 'Media'
-EMBED_MODEL  = 'text-embedding-3-large'
+CHROMA_HOST  = 'localhost'
+CHROMA_PORT  = 8000
+COLLECTION   = 'media'
 STATE_FILE   = Path.home() / 'SecondBrain' / 'media_state.json'
 THUMB_DIR    = Path.home() / 'SecondBrain' / 'thumbnails'
 MAX_IMG_PX   = 1024    # resize images larger than this before sending to Vision
@@ -39,16 +39,16 @@ AUDIO_EXTS = {'.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.opus', '.wma'}
 VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv'}
 
 client   = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-weaviate_client = weaviate.connect_to_local()
+chroma   = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
 
-# Get media collection handle
-col = weaviate_client.collections.get(COLLECTION)
+# Get or create media collection
 try:
-    count = col.aggregate.over_all().total_count
-    print(f'✅ media collection: {count} vectors')
+    col = chroma.get_collection(COLLECTION)
+    print(f'✅ media collection: {col.count()} vectors')
 except Exception:
-    print(f'✅ Media collection ready')
+    col = chroma.create_collection(COLLECTION, metadata={'hnsw:space': 'ip'})
+    print(f'✅ Created media collection')
 
 # ── State tracking (skip already-processed files) ────────────────────────────
 def load_state():
@@ -234,33 +234,27 @@ def embed_and_store(path: Path, result: dict):
     try:
         text = result['description']
         embedding_response = client.embeddings.create(
-            model=EMBED_MODEL,
+            model='text-embedding-3-small',
             input=text
         )
         embedding = embedding_response.data[0].embedding
 
         chunk_id = f'media_{hashlib.md5(str(path).encode()).hexdigest()}'
-        uuid = weaviate.util.generate_uuid5(chunk_id)
 
-        # Delete existing entry for this file (upsert pattern)
-        try:
-            col.data.delete_by_id(uuid)
-        except Exception:
-            pass
-
-        col.data.insert(
-            properties={
-                'content': text,
+        col.upsert(
+            ids=[chunk_id],
+            embeddings=[embedding],
+            documents=[text],
+            metadatas=[{
                 'source_path': str(path),
                 'file_name': path.name,
                 'file_type': result['type'],
                 'modified': datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
                 'thumb_path': result.get('thumb') or '',
-            },
-            uuid=uuid,
-            vector=embedding,
+                'collection': 'media'
+            }]
         )
-        print(f'  ✅ Stored in Weaviate: {path.name}')
+        print(f'  ✅ Stored in ChromaDB: {path.name}')
         return True
     except Exception as e:
         print(f'  ✗ Store failed: {e}')

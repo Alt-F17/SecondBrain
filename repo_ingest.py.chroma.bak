@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 LifeDB Repo Ingestion — Phase 4
-Indexes all cloned GitHub repos into Weaviate 'Repos' collection.
-Language-aware chunking, cosine distance, 4GB RAM conservative.
+Indexes all cloned GitHub repos into ChromaDB 'repos' collection.
+Language-aware chunking, ip space similarity, 4GB RAM conservative.
 """
 
 import os
@@ -24,8 +24,10 @@ log = logging.getLogger("repo-ingest")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 REPOS_PATH    = Path.home() / "repos"
-COLLECTION    = "Repos"
-EMBED_MODEL   = "text-embedding-3-large"
+CHROMA_HOST   = "localhost"
+CHROMA_PORT   = 8000
+COLLECTION    = "repos"
+EMBED_MODEL   = "text-embedding-3-small"
 CHUNK_CHARS   = 1800
 CHUNK_OVERLAP = 200
 BATCH_SIZE    = 10
@@ -216,12 +218,14 @@ SKIP_DIRS = {
 }
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-import weaviate
-from weaviate.classes.query import Filter
+import chromadb
 from openai import OpenAI
 
-weaviate_client = weaviate.connect_to_local()
-collection = weaviate_client.collections.get(COLLECTION)
+chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+collection = chroma_client.get_or_create_collection(
+    name=COLLECTION,
+    metadata={"hnsw:space": "ip"}
+)
 openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -431,9 +435,9 @@ def ingest_file(path, repo_name, state):
 
     # Delete old chunks
     try:
-        collection.data.delete_many(
-            where=Filter.by_property("source_path").equal(rel_path)
-        )
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
     except Exception:
         pass
 
@@ -445,24 +449,26 @@ def ingest_file(path, repo_name, state):
         if not embeddings:
             continue
 
-        objects = []
-        for j, (text, embedding) in enumerate(zip(batch, embeddings)):
-            chunk_id = hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
-            objects.append(weaviate.classes.data.DataObject(
-                properties={
-                    "content": text,
-                    "source_path": rel_path,
-                    "file_name": path.name,
-                    "file_type": file_type,
-                    "repo": repo_name,
-                    "chunk_index": i + j,
-                },
-                uuid=weaviate.util.generate_uuid5(chunk_id),
-                vector=embedding,
-            ))
+        ids = [
+            hashlib.md5(f"{rel_path}_{i+j}_{current_hash}".encode()).hexdigest()
+            for j in range(len(batch))
+        ]
+
+        metadatas = [{
+            "source_path": rel_path,
+            "file_name": path.name,
+            "file_type": file_type,
+            "repo": repo_name,
+            "chunk_index": i + j,
+        } for j in range(len(batch))]
 
         try:
-            collection.data.insert_many(objects)
+            collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=batch,
+                metadatas=metadatas
+            )
             total += len(batch)
         except Exception as e:
             log.error(f"Upsert failed: {e}")
@@ -475,9 +481,9 @@ def ingest_file(path, repo_name, state):
 def remove_file_from_index(path, state):
     try:
         rel_path = str(path.relative_to(REPOS_PATH))
-        collection.data.delete_many(
-            where=Filter.by_property("source_path").equal(rel_path)
-        )
+        existing = collection.get(where={"source_path": rel_path})
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
     except Exception:
         pass
     state.pop(str(path), None)
@@ -508,8 +514,8 @@ def bulk_scan(state):
         scan_repo(repo_path, repo_name, state)
         save_state(state)
 
-    total = collection.aggregate.over_all().total_count
-    log.info(f"✅ Bulk scan complete — {total} total vectors in 'Repos' collection")
+    total = collection.count()
+    log.info(f"✅ Bulk scan complete — {total} total vectors in 'repos' collection")
 
 # ── Periodic pull + rescan ────────────────────────────────────────────────────
 def run_forever(state):
@@ -529,7 +535,7 @@ def run_forever(state):
 if __name__ == "__main__":
     log.info("🧠 LifeDB Repo Ingestion Pipeline")
     log.info(f"   Repos path : {REPOS_PATH}")
-    log.info(f"   Collection : {COLLECTION} (cosine)")
+    log.info(f"   Collection : {COLLECTION} (ip space)")
     log.info(f"   Embed model: {EMBED_MODEL}")
     log.info(f"   Extensions : {len(SUPPORTED)} supported")
     log.info(f"   Filenames  : {len(SUPPORTED_FILENAMES)} supported")

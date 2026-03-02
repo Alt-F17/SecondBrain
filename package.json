@@ -15,11 +15,18 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/tests/*.test.js"],
+    "testMatch": [
+      "**/tests/*.test.js"
+    ],
     "setupFilesAfterEnv": [],
     "testTimeout": 15000,
-    "collectCoverageFrom": ["server.js"],
-    "coverageReporters": ["text", "lcov"]
+    "collectCoverageFrom": [
+      "server.js"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ]
   },
   "keywords": [
     "memory",
@@ -33,11 +40,11 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "chromadb": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "openai": "^4.20.0"
+    "openai": "^4.20.0",
+    "weaviate-client": "^3.11.0"
   },
   "devDependencies": {
     "jest": "^30.2.0",
